@@ -19,6 +19,7 @@ import com.beyond.jgit.util.PathUtils;
 import lombok.Data;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.collections4.CollectionUtils;
+import org.apache.commons.collections4.ListUtils;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.io.filefilter.IOFileFilter;
 import org.apache.commons.io.filefilter.TrueFileFilter;
@@ -231,9 +232,22 @@ public class GitLite {
         // todo easy
         // fetch remote head to remote head lock
         // locked?
-        remoteStorage.download(PathUtils.concat("refs","remotes","master"), new File(PathUtils.concat(config.getRefsRemotesDir(),"master.lock")));
+        File remoteHeadFile = new File(PathUtils.concat(config.getRefsRemotesDir(), "master"));
+        File remoteHeadLockFile = new File(PathUtils.concat(config.getRefsRemotesDir(), "master.lock"));
+        remoteStorage.download(PathUtils.concat("refs","remotes","master"), remoteHeadLockFile);
         // fetch remote logs to remote logs lock
         remoteStorage.download(PathUtils.concat("logs","remotes","master.json"), new File(PathUtils.concat(config.getLogsRemotesDir(),"master.json.lock")));
+
+        List<LogItem> logs = remoteLogManager.getLogs();
+        String remoteHeadObjectId = FileUtils.readFileToString(remoteHeadFile, StandardCharsets.UTF_8);
+        String remoteHeadLockObjectId = FileUtils.readFileToString(remoteHeadLockFile, StandardCharsets.UTF_8);
+        int remoteLockIndex = ListUtils.indexOf(logs, x -> StringUtils.equals(x.getCommitObjectId(), remoteHeadLockObjectId));
+        int remoteIndex = ListUtils.indexOf(logs, x -> StringUtils.equals(x.getCommitObjectId(), remoteHeadObjectId));
+        if (remoteLockIndex <= remoteIndex){
+            log.warn("remote in file is after remote in web");
+            return;
+        }
+
         // 根据 remote head 判断需要下载那些objects
         String remoteCommitObjectId = findRemoteCommitObjectId();
         String remoteLockCommitObjectId = findRemoteLockCommitObjectId();
@@ -263,8 +277,6 @@ public class GitLite {
         }
 
         // update head
-        File remoteHeadLockFile = new File(PathUtils.concat(config.getRefsRemotesDir(), "master.lock"));
-        File remoteHeadFile = new File(PathUtils.concat(config.getRefsRemotesDir(), "master"));
         remoteStorage.download(PathUtils.concat("refs","master"), remoteHeadLockFile);
 
         remoteLogManager.commit();
