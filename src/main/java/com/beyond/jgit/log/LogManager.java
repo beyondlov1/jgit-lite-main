@@ -26,6 +26,15 @@ public class LogManager {
 
 
     public void appendToLock(LogItem logItem) throws IOException {
+        LogItem lastLogItem = getLastLogItem();
+        String parentCommitObjectId = EMPTY_OBJECT_ID;
+        if (lastLogItem != null && lastLogItem.getCommitObjectId() != null) {
+            parentCommitObjectId = lastLogItem.getCommitObjectId();
+        }
+        if (StringUtils.equals(parentCommitObjectId, logItem.getCommitObjectId())) {
+            return;
+        }
+
         List<LogItem> logs = getLogs();
         if (logs == null) {
             logs = new ArrayList<>();
