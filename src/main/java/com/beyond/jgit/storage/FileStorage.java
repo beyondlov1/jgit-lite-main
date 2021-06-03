@@ -28,18 +28,18 @@ public class FileStorage extends AbstractStorage {
     @Override
     public void mkdir(Collection<String> dirPaths) throws IOException {
         for (String dirPath : dirPaths) {
-            FileUtils.forceMkdir(new File(dirPath));
+            FileUtils.forceMkdir(new File(PathUtils.concat(basePath,dirPath)));
         }
     }
 
     @Override
     public void mkdir(String dir) throws IOException {
-        FileUtils.forceMkdir(new File(dir));
+        FileUtils.forceMkdir(new File(PathUtils.concat(basePath,dir)));
     }
 
     @Override
     public void delete(String path) throws IOException {
-        FileUtils.forceDelete(new File(path));
+        FileUtils.forceDelete(new File(PathUtils.concat(basePath,path)));
     }
 
     @Override

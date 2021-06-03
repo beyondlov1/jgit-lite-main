@@ -229,7 +229,6 @@ public class GitLite {
 
 
     public void fetch() throws IOException {
-        // todo easy
         // fetch remote head to remote head lock
         // locked?
         File remoteHeadFile = new File(PathUtils.concat(config.getRefsRemotesDir(), "master"));
@@ -243,8 +242,12 @@ public class GitLite {
         String remoteHeadLockObjectId = FileUtils.readFileToString(remoteHeadLockFile, StandardCharsets.UTF_8);
         int remoteLockIndex = ListUtils.indexOf(logs, x -> StringUtils.equals(x.getCommitObjectId(), remoteHeadLockObjectId));
         int remoteIndex = ListUtils.indexOf(logs, x -> StringUtils.equals(x.getCommitObjectId(), remoteHeadObjectId));
-        if (remoteLockIndex <= remoteIndex){
+        if (remoteLockIndex < remoteIndex){
             log.warn("remote in file is after remote in web");
+            return;
+        }
+        if (remoteLockIndex == remoteIndex){
+            log.warn("Already up to date.");
             return;
         }
 
@@ -269,7 +272,7 @@ public class GitLite {
 
         // update logs
         try {
-            remoteStorage.download(PathUtils.concat("logs","master.json"), new File(PathUtils.concat(config.getLogsRemotesDir(),"master.json.lock")));
+            remoteStorage.download(PathUtils.concat("logs","remotes","master.json"), new File(PathUtils.concat(config.getLogsRemotesDir(),"master.json.lock")));
         }catch (Exception e){
             log.error("download remote logs fail", e);
             remoteLogManager.rollback();
@@ -277,7 +280,7 @@ public class GitLite {
         }
 
         // update head
-        remoteStorage.download(PathUtils.concat("refs","master"), remoteHeadLockFile);
+        remoteStorage.download(PathUtils.concat("refs","remotes","master"), remoteHeadLockFile);
 
         remoteLogManager.commit();
         Files.move(remoteHeadLockFile.toPath(), remoteHeadFile.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
@@ -434,7 +437,7 @@ public class GitLite {
         changedEntries.addAll(committedDiff.getAdded());
         changedEntries.addAll(committedDiff.getUpdated());
         //  upload
-        Set<String> dirs = changedEntries.stream().map(x -> PathUtils.parent(ObjectUtils.path(x.getObjectId()))).collect(Collectors.toSet());
+        Set<String> dirs = changedEntries.stream().map(x -> PathUtils.parent(ObjectUtils.path(x.getObjectId()))).map(x->PathUtils.concat("objects",x)).collect(Collectors.toSet());
         remoteStorage.mkdir(dirs);
         for (Index.Entry changedEntry : changedEntries) {
             File objectFile = ObjectUtils.getObjectFile(config.getObjectsDir(), changedEntry.getObjectId());
@@ -541,8 +544,9 @@ public class GitLite {
         GitLite gitLite = new GitLite(config);
         gitLite.init();
 //        gitLite.add();
-//        System.out.println(gitLite.commit());
+//        gitLite.commit();
 //        gitLite.merge();
-        gitLite.push();
+//        gitLite.push();
+        gitLite.fetch();
     }
 }
