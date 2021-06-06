@@ -250,7 +250,7 @@ public class GitLite {
         if (remoteLogManager == null){
             throw new RuntimeException("remoteLogManager is not exist");
         }
-        if (!remoteStorage.exists(PathUtils.concat("refs", "remotes", "master"))) {
+        if (!remoteStorage.exists(PathUtils.concat("refs", "remotes",remoteName, "master"))) {
             log.warn("remote is empty");
             return;
         }
@@ -291,7 +291,7 @@ public class GitLite {
 
         // 根据 remote head 判断需要下载那些objects
         String remoteCommitObjectId = findRemoteCommitObjectId(remoteName);
-        String remoteLockCommitObjectId = findRemoteLockCommitObjectId();
+        String remoteLockCommitObjectId = findRemoteLockCommitObjectId(remoteName);
 
         Index remoteHeadIndex = Index.generateFromCommit(remoteCommitObjectId, objectManager);
         Index remoteLockHeadIndex = Index.generateFromCommit(remoteLockCommitObjectId, objectManager);
@@ -324,6 +324,19 @@ public class GitLite {
         remoteLogManager.commit();
         Files.move(remoteHeadLockFile.toPath(), remoteHeadFile.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
 
+    }
+
+    public void checkout(String commitObjectId) throws IOException {
+        Index index = Index.generateFromCommit(commitObjectId, objectManager);
+        List<Index.Entry> entries = index.getEntries();
+        for (Index.Entry entry : entries) {
+            String absPath = PathUtils.concat(config.getLocalDir(), entry.getPath());
+            ObjectEntity objectEntity = objectManager.read(entry.getObjectId());
+            if (objectEntity.getType() == ObjectEntity.Type.blob){
+                BlobObjectData blobObjectData = BlobObjectData.parseFrom(objectEntity.getData());
+                FileUtils.writeByteArrayToFile(new File(absPath),blobObjectData.getData());
+            }
+        }
     }
 
 
@@ -451,11 +464,11 @@ public class GitLite {
         return StringUtils.trim(FileUtils.readFileToString(file, StandardCharsets.UTF_8));
     }
 
-    private String findRemoteLockCommitObjectId() throws IOException {
+    private String findRemoteLockCommitObjectId(String remoteName) throws IOException {
         String headPath = config.getHeadPath();
         String ref = FileUtils.readFileToString(new File(headPath), StandardCharsets.UTF_8);
         String relativePath = StringUtils.trim(StringUtils.substringAfter(ref, "ref: "));
-        relativePath = relativePath.replace("/heads/", "/remotes/");
+        relativePath = relativePath.replace(File.separator+"heads"+File.separator, File.separator+"remotes"+File.separator+remoteName+File.separator);
         File file = new File(config.getGitDir(), relativePath + ".lock");
         if (!file.exists()) {
             return null;
@@ -599,7 +612,8 @@ public class GitLite {
 
     public static void main(String[] args) throws IOException {
         GitLiteConfig config = new GitLiteConfig();
-        config.setLocalDir("/home/beyond/Documents/GitHubProject/test-jgit");
+//        config.setLocalDir("/home/beyond/Documents/GitHubProject/test-jgit");
+        config.setLocalDir("/home/beyond/Documents/tmp-git-2/");
         config.setGitDir(PathUtils.concat("/home/beyond/Documents/tmp-git-2/", ".git"));
         config.setHeadPath(PathUtils.concat(config.getGitDir(), "HEAD"));
         config.setIndexPath(PathUtils.concat(config.getGitDir(), "index.json"));
@@ -618,11 +632,12 @@ public class GitLite {
         String defaultRemoteName = "local";
         GitLite gitLite = new GitLite(config);
         gitLite.init();
-        gitLite.add();
-        gitLite.commit();
-        gitLite.merge(defaultRemoteName);
+//        gitLite.add();
+//        gitLite.commit();
+//        gitLite.merge(defaultRemoteName);
 //        gitLite.fetch(defaultRemoteName);
 
-        // todo: object->file
+        gitLite.checkout(gitLite.findLocalCommitObjectId());
+
     }
 }
