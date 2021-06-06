@@ -24,13 +24,17 @@ public class SardineStorage extends AbstractStorage {
 
     public SardineStorage(String basePath, String username, String password) {
         this.basePath = basePath;
-        sardine = new OkHttpSardine();
+        sardine = new LoggedSardine(new OkHttpSardine());
         sardine.setCredentials(username, password);
     }
 
     @Override
-    public boolean exists(String path) {
-        return false;
+    public boolean exists(String path) throws IOException {
+        String absPath = getAbsPath(path);
+        if (existDirs.contains(PathUtils.parent(absPath))){
+            return true;
+        }
+        return sardine.exists(absPath);
     }
 
     @Override

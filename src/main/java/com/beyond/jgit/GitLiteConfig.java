@@ -2,6 +2,9 @@ package com.beyond.jgit;
 
 import lombok.Data;
 
+import java.util.ArrayList;
+import java.util.List;
+
 
 @Data
 public class GitLiteConfig {
@@ -20,8 +23,26 @@ public class GitLiteConfig {
     private String committerName;
     private String committerEmail;
 
-    private String remoteUrl;
-    private String remoteUserName;
-    private String remotePassword;
+    private List<RemoteConfig> remoteConfigs = new ArrayList<>();
 
+
+    @Data
+    public static class RemoteConfig {
+        private String remoteName;
+        private String remoteUrl;
+        private String remoteUserName;
+        private String remotePassword;
+
+        public RemoteConfig(String remoteName, String remoteUrl) {
+            this.remoteName = remoteName;
+            this.remoteUrl = remoteUrl;
+        }
+
+        public RemoteConfig(String remoteName, String remoteUrl, String remoteUserName, String remotePassword) {
+            this.remoteName = remoteName;
+            this.remoteUrl = remoteUrl;
+            this.remoteUserName = remoteUserName;
+            this.remotePassword = remotePassword;
+        }
+    }
 }

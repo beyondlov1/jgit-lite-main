@@ -5,7 +5,7 @@ import java.io.IOException;
 import java.util.Collection;
 
 public interface Storage {
-    boolean exists(String path);
+    boolean exists(String path) throws IOException;
     void upload(File file, String targetPath) throws IOException;
     void download(String path, File targetFile) throws IOException;
     void mkdir(Collection<String> dirPaths) throws IOException;

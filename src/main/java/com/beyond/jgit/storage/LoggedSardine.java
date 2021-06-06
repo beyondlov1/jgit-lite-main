@@ -1,4 +1,4 @@
-package com.beyond.fc.cluster.storage.support;
+package com.beyond.jgit.storage;
 
 import com.thegrizzlylabs.sardineandroid.*;
 import com.thegrizzlylabs.sardineandroid.report.SardineReport;

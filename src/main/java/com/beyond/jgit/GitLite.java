@@ -42,9 +42,11 @@ public class GitLite {
 
     private final ObjectManager objectManager;
     private final IndexManager indexManager;
-    private final LogManager remoteLogManager;
     private final LogManager localLogManager;
-    private final Storage remoteStorage;
+
+
+    private final Map<String,LogManager> remoteLogManagerMap;
+    private final Map<String,Storage>  remoteStorageMap;
 
     private final GitLiteConfig config;
 
@@ -53,12 +55,17 @@ public class GitLite {
         this.objectManager = new ObjectManager(config.getObjectsDir());
         this.indexManager = new IndexManager(config.getIndexPath());
         this.localLogManager = new LogManager(PathUtils.concat(config.getLogsHeadsDir(), "master.json"));
-        this.remoteLogManager = new LogManager(PathUtils.concat(config.getLogsRemotesDir(), "master.json"));
 
-        if (config.getRemoteUrl().startsWith("http://") || config.getRemoteUrl().startsWith("https://")) {
-            this.remoteStorage = new SardineStorage(PathUtils.concat(config.getRemoteUrl(), ".git"), config.getRemoteUserName(), config.getRemotePassword());
-        } else {
-            this.remoteStorage = new FileStorage(PathUtils.concat(config.getRemoteUrl(), ".git"));
+        this.remoteLogManagerMap = new HashMap<>();
+        this.remoteStorageMap = new HashMap<>();
+
+        for (GitLiteConfig.RemoteConfig remoteConfig : config.getRemoteConfigs()) {
+            remoteLogManagerMap.put(remoteConfig.getRemoteName(), new LogManager(PathUtils.concat(config.getLogsRemotesDir(), remoteConfig.getRemoteName(), "master.json")));
+            if (remoteConfig.getRemoteUrl().startsWith("http://") || remoteConfig.getRemoteUrl().startsWith("https://")) {
+                remoteStorageMap.put(remoteConfig.getRemoteName(), new SardineStorage(PathUtils.concat(remoteConfig.getRemoteUrl(), ".git"), remoteConfig.getRemoteUserName(), remoteConfig.getRemotePassword()));
+            } else {
+                remoteStorageMap.put(remoteConfig.getRemoteName() ,new FileStorage(PathUtils.concat(remoteConfig.getRemoteUrl(), ".git")));
+            }
         }
     }
 
@@ -234,35 +241,56 @@ public class GitLite {
     }
 
 
-    public void fetch() throws IOException {
+    public void fetch(String remoteName) throws IOException {
+        Storage remoteStorage = remoteStorageMap.get(remoteName);
+        if (remoteStorage == null){
+            throw new RuntimeException("remoteStorage is not exist");
+        }
+        LogManager remoteLogManager = remoteLogManagerMap.get(remoteName);
+        if (remoteLogManager == null){
+            throw new RuntimeException("remoteLogManager is not exist");
+        }
         if (!remoteStorage.exists(PathUtils.concat("refs", "remotes", "master"))) {
             log.warn("remote is empty");
             return;
         }
+
+        initRemoteDirs(remoteName);
+
         // fetch remote head to remote head lock
         // locked?
-        File remoteHeadFile = new File(PathUtils.concat(config.getRefsRemotesDir(), "master"));
-        File remoteHeadLockFile = new File(PathUtils.concat(config.getRefsRemotesDir(), "master.lock"));
-        remoteStorage.download(PathUtils.concat("refs", "remotes", "master"), remoteHeadLockFile);
+        File remoteHeadFile = new File(PathUtils.concat(config.getRefsRemotesDir(), remoteName,"master"));
+        File remoteHeadLockFile = new File(PathUtils.concat(config.getRefsRemotesDir(), remoteName,"master.lock"));
+        if (remoteHeadLockFile.exists()) {
+            log.error("remote master is locked, path:{}", remoteHeadLockFile.getAbsolutePath());
+            throw new RuntimeException("remote master is locked");
+        }
+        remoteStorage.download(PathUtils.concat("refs", "remotes",remoteName, "master"), remoteHeadLockFile);
         // fetch remote logs to remote logs lock
-        remoteStorage.download(PathUtils.concat("logs", "remotes", "master.json"), new File(PathUtils.concat(config.getLogsRemotesDir(), "master.json.lock")));
+        remoteStorage.download(PathUtils.concat("logs", "remotes", remoteName, "master.json"), new File(PathUtils.concat(config.getLogsRemotesDir(), remoteName,"master.json.lock")));
 
         List<LogItem> logs = remoteLogManager.getLogs();
-        String remoteHeadObjectId = FileUtils.readFileToString(remoteHeadFile, StandardCharsets.UTF_8);
-        String remoteHeadLockObjectId = FileUtils.readFileToString(remoteHeadLockFile, StandardCharsets.UTF_8);
-        int remoteLockIndex = ListUtils.indexOf(logs, x -> StringUtils.equals(x.getCommitObjectId(), remoteHeadLockObjectId));
-        int remoteIndex = ListUtils.indexOf(logs, x -> StringUtils.equals(x.getCommitObjectId(), remoteHeadObjectId));
-        if (remoteLockIndex < remoteIndex) {
-            log.warn("remote in file is after remote in web");
-            return;
-        }
-        if (remoteLockIndex == remoteIndex) {
-            log.warn("Already up to date.");
-            return;
+        if (remoteHeadFile.exists() && logs != null) {
+            String remoteHeadObjectId = FileUtils.readFileToString(remoteHeadFile, StandardCharsets.UTF_8);
+            String remoteHeadLockObjectId = FileUtils.readFileToString(remoteHeadLockFile, StandardCharsets.UTF_8);
+            int remoteLockIndex = ListUtils.indexOf(logs, x -> StringUtils.equals(x.getCommitObjectId(), remoteHeadLockObjectId));
+            int remoteIndex = ListUtils.indexOf(logs, x -> StringUtils.equals(x.getCommitObjectId(), remoteHeadObjectId));
+            if (remoteLockIndex < remoteIndex) {
+                log.warn("remote in file is after remote in web");
+                remoteLogManager.commit();
+                Files.move(remoteHeadLockFile.toPath(), remoteHeadFile.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+                return;
+            }
+            if (remoteLockIndex == remoteIndex) {
+                log.warn("Already up to date.");
+                remoteLogManager.commit();
+                Files.move(remoteHeadLockFile.toPath(), remoteHeadFile.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+                return;
+            }
         }
 
         // 根据 remote head 判断需要下载那些objects
-        String remoteCommitObjectId = findRemoteCommitObjectId();
+        String remoteCommitObjectId = findRemoteCommitObjectId(remoteName);
         String remoteLockCommitObjectId = findRemoteLockCommitObjectId();
 
         Index remoteHeadIndex = Index.generateFromCommit(remoteCommitObjectId, objectManager);
@@ -282,7 +310,8 @@ public class GitLite {
 
         // update logs
         try {
-            remoteStorage.download(PathUtils.concat("logs", "remotes", "master.json"), new File(PathUtils.concat(config.getLogsRemotesDir(), "master.json.lock")));
+            String currRemoteLogsDir = PathUtils.concat(config.getLogsRemotesDir(), remoteName);
+            remoteStorage.download(PathUtils.concat("logs", "remotes", remoteName, "master.json"), new File(PathUtils.concat(currRemoteLogsDir,"master.json.lock")));
         } catch (Exception e) {
             log.error("download remote logs fail", e);
             remoteLogManager.rollback();
@@ -290,7 +319,7 @@ public class GitLite {
         }
 
         // update head
-        remoteStorage.download(PathUtils.concat("refs", "remotes", "master"), remoteHeadLockFile);
+        remoteStorage.download(PathUtils.concat("refs", "remotes", remoteName, "master"), remoteHeadLockFile);
 
         remoteLogManager.commit();
         Files.move(remoteHeadLockFile.toPath(), remoteHeadFile.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
@@ -298,23 +327,29 @@ public class GitLite {
     }
 
 
-    public void merge() throws IOException {
-        // todo hard
+    public void merge(String remoteName) throws IOException {
         // 找不同
         // 1. 创建目录结构列表
         // 2. 对比基础commit和新commit之间的文件路径差异(列出那些文件是添加， 那些是删除， 那些是更新)
         // 3. local和remote找到共同的提交历史， 对比变化
         // 4. 对比变化的差异（以文件路径为key)
-        // fixme: 根据log查询local和remote共同经历的最后一个commit
+        // 根据log查询local和remote共同经历的最后一个commit
+
+        LogManager remoteLogManager = remoteLogManagerMap.get(remoteName);
+        if (remoteLogManager == null){
+            throw new RuntimeException("remoteLogManager is not exist");
+        }
 
         List<LogItem> committedLogs = localLogManager.getLogs();
         List<LogItem> remoteLogs = remoteLogManager.getLogs();
 
         if (committedLogs == null) {
+            log.warn("local logs is empty");
             return;
         }
         if (remoteLogs == null) {
-            return;
+            log.warn("remote logs is empty");
+            remoteLogs = new ArrayList<>();
         }
 
         String intersectionCommitObjectId = null;
@@ -326,12 +361,11 @@ public class GitLite {
             }
         }
         if (intersectionCommitObjectId == null) {
-            log.warn("无相同的commitObjectId, 未合并");
-            return;
+            log.warn("无相同的commitObjectId, remote log is empty, cover.");
         }
 
         String localCommitObjectId = findLocalCommitObjectId();
-        String remoteCommitObjectId = findRemoteCommitObjectId();
+        String remoteCommitObjectId = findRemoteCommitObjectId(remoteName);
 
         Index intersectionIndex = Index.generateFromCommit(intersectionCommitObjectId, objectManager);
 
@@ -386,7 +420,7 @@ public class GitLite {
 
         commit();
 
-        push();
+        push(remoteName);
     }
 
 
@@ -405,11 +439,11 @@ public class GitLite {
         return new File(config.getGitDir(), relativePath);
     }
 
-    private String findRemoteCommitObjectId() throws IOException {
+    private String findRemoteCommitObjectId(String remoteName) throws IOException {
         String headPath = config.getHeadPath();
         String ref = FileUtils.readFileToString(new File(headPath), StandardCharsets.UTF_8);
         String relativePath = StringUtils.trim(StringUtils.substringAfter(ref, "ref: "));
-        relativePath = relativePath.replace("/heads/", "/remotes/");
+        relativePath = relativePath.replace(File.separator+"heads"+File.separator, File.separator+"remotes"+File.separator+remoteName+File.separator);
         File file = new File(config.getGitDir(), relativePath);
         if (!file.exists()) {
             return null;
@@ -429,12 +463,21 @@ public class GitLite {
         return StringUtils.trim(FileUtils.readFileToString(file, StandardCharsets.UTF_8));
     }
 
-    public void push() throws IOException {
+    public void push(String remoteName) throws IOException {
+        Storage remoteStorage = remoteStorageMap.get(remoteName);
+        if (remoteStorage == null){
+            throw new RuntimeException("remoteStorage is not exist");
+        }
+        LogManager remoteLogManager = remoteLogManagerMap.get(remoteName);
+        if (remoteLogManager == null){
+            throw new RuntimeException("remoteLogManager is not exist");
+        }
+
         // todo: 远程为空
         // fetch哪些就push哪些
         // 1. 根据最新commitObjectId获取更新了那些文件
         String localCommitObjectId = findLocalCommitObjectId();
-        String remoteCommitObjectId = findRemoteCommitObjectId();
+        String remoteCommitObjectId = findRemoteCommitObjectId(remoteName);
 
         Index committedHeadIndex = Index.generateFromCommit(localCommitObjectId, objectManager);
         Index remoteHeadIndex = Index.generateFromCommit(remoteCommitObjectId, objectManager);
@@ -442,7 +485,7 @@ public class GitLite {
         IndexDiffResult committedDiff = IndexDiffer.diff(committedHeadIndex, remoteHeadIndex);
         log.debug("committedDiff to push: {}", JsonUtils.writeValueAsString(committedDiff));
 
-        initRemoteDirs();
+        initRemoteDirs(remoteName);
 
         // 2. 上传objects
         Set<Index.Entry> changedEntries = new HashSet<>();
@@ -461,14 +504,27 @@ public class GitLite {
         if (localCommitLogItem == null) {
             throw new RuntimeException("log file error, maybe missing some commit");
         }
+        List<LogItem> remoteLogs = remoteLogManager.getLogs();
+        LogItem remoteLogItem = new LogItem();
+        if (remoteLogs == null) {
+            remoteLogItem.setParentCommitObjectId(EMPTY_OBJECT_ID);
+        } else {
+            remoteLogItem.setParentCommitObjectId(remoteLogs.get(remoteLogs.size() - 1).getCommitObjectId());
+        }
+        remoteLogItem.setCommitObjectId(localCommitLogItem.getCommitObjectId());
+        remoteLogItem.setCommitterName(localCommitLogItem.getCommitterName());
+        remoteLogItem.setCommitterEmail(localCommitLogItem.getCommitterEmail());
+        remoteLogItem.setMessage("push");
+        remoteLogItem.setMtime(System.currentTimeMillis());
         remoteLogManager.lock();
-        remoteLogManager.appendToLock(localCommitLogItem);
+        remoteLogManager.appendToLock(remoteLogItem);
 
         // 4  上传日志
         try {
+            String currRemoteLogsDir = PathUtils.concat(config.getLogsRemotesDir(), remoteName);
             //  upload log lock file to log file
-            remoteStorage.upload(new File(PathUtils.concat(config.getLogsRemotesDir(), "master.json.lock")),
-                    PathUtils.concat("logs", "remotes", "master.json"));
+            remoteStorage.upload(new File(PathUtils.concat(currRemoteLogsDir,"master.json.lock")),
+                    PathUtils.concat("logs", "remotes",remoteName, "master.json"));
             remoteLogManager.commit();
         } catch (Exception e) {
             log.error("上传日志失败", e);
@@ -477,7 +533,8 @@ public class GitLite {
         }
 
         // 5. 修改本地remote的head(异常回退)
-        File remoteHeadFile = new File(config.getRefsRemotesDir(), "master");
+        String currRemoteRefsDir = PathUtils.concat(config.getRefsRemotesDir(), remoteName);
+        File remoteHeadFile = new File(currRemoteRefsDir, "master");
         File remoteHeadLockFile = new File(remoteHeadFile.getAbsolutePath() + ".lock");
         FileUtils.copyFile(new File(PathUtils.concat(config.getRefsHeadsDir(), "master")), remoteHeadLockFile);
         FileUtils.writeStringToFile(remoteHeadLockFile, localCommitObjectId, StandardCharsets.UTF_8);
@@ -486,7 +543,7 @@ public class GitLite {
         try {
             //  upload remote head lock to remote head
             remoteStorage.upload(new File(PathUtils.concat(config.getRefsHeadsDir(), "master")),
-                    PathUtils.concat("refs", "remotes", "master"));
+                    PathUtils.concat("refs", "remotes", remoteName, "master"));
             Files.move(remoteHeadLockFile.toPath(), remoteHeadFile.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
         } catch (Exception e) {
             log.error("上传日志失败", e);
@@ -496,14 +553,20 @@ public class GitLite {
 
     }
 
-    private void initRemoteDirs() throws IOException {
-        if (!remoteStorage.exists(PathUtils.concat("refs", "remotes"))) {
+    private void initRemoteDirs(String remoteName) throws IOException {
+        Storage remoteStorage = remoteStorageMap.get(remoteName);
+        if (remoteStorage == null){
+            throw new RuntimeException("remoteStorage is not exist");
+        }
+        if (!remoteStorage.exists(PathUtils.concat("refs", "remotes", remoteName))) {
             remoteStorage.mkdir("");
             remoteStorage.mkdir("objects");
             remoteStorage.mkdir("logs");
             remoteStorage.mkdir(PathUtils.concat("logs", "remotes"));
+            remoteStorage.mkdir(PathUtils.concat("logs", "remotes", remoteName));
             remoteStorage.mkdir("refs");
             remoteStorage.mkdir(PathUtils.concat("refs", "remotes"));
+            remoteStorage.mkdir(PathUtils.concat("refs", "remotes", remoteName));
         }
     }
 
@@ -549,18 +612,17 @@ public class GitLite {
         config.setLogsRemotesDir(PathUtils.concat(config.getLogsDir(), "remotes"));
         config.setCommitterName("beyondlov1");
         config.setCommitterEmail("beyondlov1@hotmail.com");
-//        config.setRemoteUrl("/home/beyond/Documents/tmp-git-2-remote");
-        config.setRemoteUrl("https://dav.jianguoyun.com/dav/FILE_CLUSTER/app/");
+        config.getRemoteConfigs().add(new GitLiteConfig.RemoteConfig("local","/home/beyond/Documents/tmp-git-2-remote"));
+        config.getRemoteConfigs().add(new GitLiteConfig.RemoteConfig("origin","https://dav.jianguoyun.com/dav/FILE_CLUSTER/app/"));
 
-
+        String defaultRemoteName = "local";
         GitLite gitLite = new GitLite(config);
         gitLite.init();
         gitLite.add();
         gitLite.commit();
-        gitLite.merge();
-//        gitLite.push();
-//        gitLite.fetch();
+        gitLite.merge(defaultRemoteName);
+//        gitLite.fetch(defaultRemoteName);
 
-        // todo: 确认git push时，remote logs记录了所有commits？
+        // todo: object->file
     }
 }

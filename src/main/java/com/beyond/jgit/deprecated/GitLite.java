@@ -303,8 +303,6 @@ public class GitLite {
         config.setRefsHeadsDir(PathUtils.concat(config.getGitDir(), "refs","heads"));
         config.setCommitterName("beyondlov1");
         config.setCommitterEmail("beyondlov1@hotmail.com");
-        config.setRemoteUserName("");
-        config.setRemotePassword("");
 
         GitLite gitLite = new GitLite(config);
         gitLite.add();
