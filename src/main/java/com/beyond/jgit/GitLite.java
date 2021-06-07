@@ -62,7 +62,18 @@ public class GitLite {
         for (GitLiteConfig.RemoteConfig remoteConfig : config.getRemoteConfigs()) {
             remoteLogManagerMap.put(remoteConfig.getRemoteName(), new LogManager(PathUtils.concat(config.getLogsRemotesDir(), remoteConfig.getRemoteName(), "master.json")));
             if (remoteConfig.getRemoteUrl().startsWith("http://") || remoteConfig.getRemoteUrl().startsWith("https://")) {
-                remoteStorageMap.put(remoteConfig.getRemoteName(), new SardineStorage(PathUtils.concat(remoteConfig.getRemoteUrl(), ".git"), remoteConfig.getRemoteUserName(), remoteConfig.getRemotePassword()));
+                if (StringUtils.isNotBlank(remoteConfig.getRemoteTmpDir())){
+                    remoteStorageMap.put(remoteConfig.getRemoteName(),
+                            new SardineStorage(PathUtils.concat(remoteConfig.getRemoteUrl(), ".git"),
+                                    remoteConfig.getRemoteUserName(),
+                                    remoteConfig.getRemotePassword(),
+                                    PathUtils.concat(remoteConfig.getRemoteTmpDir(),remoteConfig.getRemoteName()+".ed")));
+                }else{
+                    remoteStorageMap.put(remoteConfig.getRemoteName(),
+                            new SardineStorage(PathUtils.concat(remoteConfig.getRemoteUrl(), ".git"),
+                                    remoteConfig.getRemoteUserName(),
+                                    remoteConfig.getRemotePassword()));
+                }
             } else {
                 remoteStorageMap.put(remoteConfig.getRemoteName() ,new FileStorage(PathUtils.concat(remoteConfig.getRemoteUrl(), ".git")));
             }
@@ -123,13 +134,13 @@ public class GitLite {
         indexManager.save(index);
     }
 
-    public String commit() throws IOException {
-        return commit(IndexManager.parseIndex(config.getIndexPath()));
+    public String commit(String message) throws IOException {
+        return commit(IndexManager.parseIndex(config.getIndexPath()), message);
     }
 
-    public String commit(Index index) throws IOException {
+    public String commit(Index index,String message) throws IOException {
         ObjectEntity tree = addTreeFromIndex(index);
-        ObjectEntity commit = addCommitObject(tree);
+        ObjectEntity commit = addCommitObject(tree, message);
         File headRefFile = getHeadRefFile();
         FileUtils.writeStringToFile(headRefFile, ObjectUtils.sha1hash(commit), StandardCharsets.UTF_8);
 
@@ -218,17 +229,17 @@ public class GitLite {
         walkUp(new FileNode(parentFile), rootNode, nodes);
     }
 
-    private ObjectEntity addCommitObject(ObjectEntity tree) throws IOException {
+    private ObjectEntity addCommitObject(ObjectEntity tree,String message) throws IOException {
         CommitObjectData commitObjectData = new CommitObjectData();
         commitObjectData.setTree(ObjectUtils.sha1hash(tree));
-        commitObjectData.setCommitTime(1620313388000L);
+        commitObjectData.setCommitTime(System.currentTimeMillis());
         CommitObjectData.User user = new CommitObjectData.User();
         user.setName(config.getCommitterName());
         user.setEmail(config.getCommitterEmail());
         commitObjectData.setCommitter(user);
         commitObjectData.setAuthor(user);
-        commitObjectData.setMessage("a");
-        commitObjectData.addParent("463783ca68ec49b4630ffbf5c35264461a3b2174"); // fixme: 找上一个提交
+        commitObjectData.setMessage(message);
+        commitObjectData.addParent(localLogManager.getLastLogItem().getCommitObjectId());
 
         ObjectEntity commitObjectEntity = new ObjectEntity();
         commitObjectEntity.setType(ObjectEntity.Type.commit);
@@ -431,9 +442,8 @@ public class GitLite {
 
         indexManager.save(committedHeadIndex);
 
-        commit();
+        commit("merge");
 
-        push(remoteName);
     }
 
 
@@ -627,17 +637,20 @@ public class GitLite {
         config.setCommitterName("beyondlov1");
         config.setCommitterEmail("beyondlov1@hotmail.com");
         config.getRemoteConfigs().add(new GitLiteConfig.RemoteConfig("local","/home/beyond/Documents/tmp-git-2-remote"));
-        config.getRemoteConfigs().add(new GitLiteConfig.RemoteConfig("origin","https://dav.jianguoyun.com/dav/FILE_CLUSTER/app/"));
+        GitLiteConfig.RemoteConfig originConfig = new GitLiteConfig.RemoteConfig("origin", "https://dav.jianguoyun.com/dav/FILE_CLUSTER/app/");
+        originConfig.setRemoteTmpDir(PathUtils.concat(config.getGitDir(),"tmp","remotes"));
+        config.getRemoteConfigs().add(originConfig);
 
-        String defaultRemoteName = "local";
+        String defaultRemoteName = "origin";
         GitLite gitLite = new GitLite(config);
         gitLite.init();
-//        gitLite.add();
-//        gitLite.commit();
-//        gitLite.merge(defaultRemoteName);
+        gitLite.add();
+        gitLite.commit("auto commit");
+        gitLite.merge(defaultRemoteName);
+        gitLite.push(defaultRemoteName);
 //        gitLite.fetch(defaultRemoteName);
-
-        gitLite.checkout(gitLite.findLocalCommitObjectId());
+//        gitLite.merge(defaultRemoteName);
+//        gitLite.checkout(gitLite.findLocalCommitObjectId());
 
     }
 }

@@ -32,6 +32,7 @@ public class GitLiteConfig {
         private String remoteUrl;
         private String remoteUserName;
         private String remotePassword;
+        private String remoteTmpDir;
 
         public RemoteConfig(String remoteName, String remoteUrl) {
             this.remoteName = remoteName;
