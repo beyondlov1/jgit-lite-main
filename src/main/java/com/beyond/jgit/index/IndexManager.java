@@ -10,6 +10,7 @@ import java.nio.file.Files;
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.util.Comparator;
 import java.util.concurrent.locks.ReentrantLock;
 
 @Slf4j
@@ -63,6 +64,7 @@ public class IndexManager {
     }
 
     public void save(Index index) throws IOException {
+        index.getEntries().sort(Comparator.comparing(Index.Entry::getPath));
         if (tryLock()) {
             File lockFile = new File(indexPath + ".lock");
             byte[] bytes = JsonUtils.writeValueAsBytes(index);

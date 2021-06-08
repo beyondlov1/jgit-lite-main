@@ -1,8 +1,10 @@
 package com.beyond.jgit.index;
 
+import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 public class IndexDiffer {
     public static IndexDiffResult diff(Index index, Index base) {
@@ -28,8 +30,8 @@ public class IndexDiffer {
         Set<Index.Entry> removed = result.getRemoved();
         Set<Index.Entry> updated = result.getUpdated();
 
-        List<Index.Entry> entries = index.getEntries();
-        List<Index.Entry> baseEntries = base.getEntries();
+        List<Index.Entry> entries = index.getEntries().stream().sorted(Comparator.comparing(Index.Entry::getPath)).collect(Collectors.toList());
+        List<Index.Entry> baseEntries = base.getEntries().stream().sorted(Comparator.comparing(Index.Entry::getPath)).collect(Collectors.toList());
 
         int leftIndex = 0;
         int rightIndex = 0;

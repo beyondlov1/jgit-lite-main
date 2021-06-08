@@ -139,6 +139,14 @@ public class GitLite {
     }
 
     public String commit(Index index,String message) throws IOException {
+
+        Index committedIndex = Index.generateFromCommit(findLocalCommitObjectId(), objectManager);
+        IndexDiffResult committedDiff = IndexDiffer.diff(index, committedIndex);
+        if (!committedDiff.isChanged()){
+            log.info("nothing changed, no commit");
+            return "nothing changed";
+        }
+
         ObjectEntity tree = addTreeFromIndex(index);
         ObjectEntity commit = addCommitObject(tree, message);
         File headRefFile = getHeadRefFile();
@@ -413,6 +421,11 @@ public class GitLite {
         remoteChanged.addAll(remoteDiff.getUpdated());
         remoteChanged.addAll(remoteDiff.getRemoved());
 
+        if (!committedDiff.isChanged() && !remoteDiff.isChanged() ){
+            log.info("nothing changed, no merge");
+            return;
+        }
+
         Set<String> committedChangedPaths = committedChanged.stream().map(Index.Entry::getPath).collect(Collectors.toSet());
         Set<String> remoteChangedPaths = remoteChanged.stream().map(Index.Entry::getPath).collect(Collectors.toSet());
 
@@ -496,7 +509,6 @@ public class GitLite {
             throw new RuntimeException("remoteLogManager is not exist");
         }
 
-        // todo: 远程为空
         // fetch哪些就push哪些
         // 1. 根据最新commitObjectId获取更新了那些文件
         String localCommitObjectId = findLocalCommitObjectId();
@@ -507,6 +519,11 @@ public class GitLite {
 
         IndexDiffResult committedDiff = IndexDiffer.diff(committedHeadIndex, remoteHeadIndex);
         log.debug("committedDiff to push: {}", JsonUtils.writeValueAsString(committedDiff));
+
+        if (!committedDiff.isChanged()){
+            log.info("nothing changed, no push");
+            return;
+        }
 
         initRemoteDirs(remoteName);
 
@@ -619,38 +636,4 @@ public class GitLite {
         }
     }
 
-
-    public static void main(String[] args) throws IOException {
-        GitLiteConfig config = new GitLiteConfig();
-//        config.setLocalDir("/home/beyond/Documents/GitHubProject/test-jgit");
-        config.setLocalDir("/home/beyond/Documents/tmp-git-2/");
-        config.setGitDir(PathUtils.concat("/home/beyond/Documents/tmp-git-2/", ".git"));
-        config.setHeadPath(PathUtils.concat(config.getGitDir(), "HEAD"));
-        config.setIndexPath(PathUtils.concat(config.getGitDir(), "index.json"));
-        config.setObjectsDir(PathUtils.concat(config.getGitDir(), "objects"));
-        config.setRefsDir(PathUtils.concat(config.getGitDir(), "refs"));
-        config.setRefsRemotesDir(PathUtils.concat(config.getGitDir(), "refs", "remotes"));
-        config.setRefsHeadsDir(PathUtils.concat(config.getGitDir(), "refs", "heads"));
-        config.setLogsDir(PathUtils.concat(config.getGitDir(), "logs"));
-        config.setLogsHeadsDir(PathUtils.concat(config.getLogsDir(), "heads"));
-        config.setLogsRemotesDir(PathUtils.concat(config.getLogsDir(), "remotes"));
-        config.setCommitterName("beyondlov1");
-        config.setCommitterEmail("beyondlov1@hotmail.com");
-        config.getRemoteConfigs().add(new GitLiteConfig.RemoteConfig("local","/home/beyond/Documents/tmp-git-2-remote"));
-        GitLiteConfig.RemoteConfig originConfig = new GitLiteConfig.RemoteConfig("origin", "https://dav.jianguoyun.com/dav/FILE_CLUSTER/app/");
-        originConfig.setRemoteTmpDir(PathUtils.concat(config.getGitDir(),"tmp","remotes"));
-        config.getRemoteConfigs().add(originConfig);
-
-        String defaultRemoteName = "origin";
-        GitLite gitLite = new GitLite(config);
-        gitLite.init();
-        gitLite.add();
-        gitLite.commit("auto commit");
-        gitLite.merge(defaultRemoteName);
-        gitLite.push(defaultRemoteName);
-//        gitLite.fetch(defaultRemoteName);
-//        gitLite.merge(defaultRemoteName);
-//        gitLite.checkout(gitLite.findLocalCommitObjectId());
-
-    }
 }
