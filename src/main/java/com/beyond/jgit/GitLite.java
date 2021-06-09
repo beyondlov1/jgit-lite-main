@@ -304,9 +304,7 @@ public class GitLite {
         }
 
         // 根据 remote head 判断需要下载那些objects
-        String remoteCommitObjectId = findRemoteCommitObjectId(remoteName);
         String remoteLockCommitObjectId = findRemoteLockCommitObjectId(remoteName);
-
         downloadByObjectIdRecursive(remoteLockCommitObjectId, remoteStorage);
 
         // update logs
