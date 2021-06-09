@@ -29,6 +29,11 @@ public class ObjectDb {
         return ZlibCompression.decompressBytes(bytes);
     }
 
+    public boolean exists(String objectId) {
+        File file = ObjectUtils.getObjectFile(objectsDir, objectId);
+        return file.exists();
+    }
+
     public static void main(String[] args) throws IOException {
         ObjectDb objectDb = new ObjectDb("/media/beyond/70f23ead-fa6d-4628-acf7-c82133c03245/home/beyond/Documents/tmp-git");
         objectDb.write("hello".getBytes());

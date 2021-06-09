@@ -25,6 +25,10 @@ public class ObjectManager {
         return ObjectEntity.parseFrom(bytes);
     }
 
+    public boolean exists(String objectId) throws IOException {
+        return objectDb.exists(objectId);
+    }
+
     public static void main(String[] args) throws IOException {
 
         String entryPre2 = "100644 no.txt\0";
