@@ -24,6 +24,7 @@ import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.collections4.ListUtils;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang3.StringUtils;
+import org.jetbrains.annotations.NotNull;
 
 import java.io.File;
 import java.io.IOException;
@@ -304,8 +305,18 @@ public class GitLite {
         }
 
         // 根据 remote head 判断需要下载那些objects
+        String remoteCommitObjectId = findRemoteCommitObjectId(remoteName);
         String remoteLockCommitObjectId = findRemoteLockCommitObjectId(remoteName);
-        downloadByObjectIdRecursive(remoteLockCommitObjectId, remoteStorage);
+        if (!remoteHeadFile.exists() || logs == null){
+            log.warn("local/remote log is empty, no fetch");
+            return;
+        }
+        List<CommitChainItem> chain = getCommitChain(logs, remoteLockCommitObjectId, remoteCommitObjectId);
+        for (CommitChainItem commitChainItem : chain) {
+            if (commitChainItem.getParent() != null){
+                downloadByObjectIdRecursive(remoteLockCommitObjectId, remoteStorage);
+            }
+        }
 
         // update logs
         try {
@@ -359,6 +370,7 @@ public class GitLite {
         Collection<File> listFiles = FileUtil.listChildFilesWithoutDirOf(PathUtils.concat(config.getLocalDir()), ".git");
         for (File listFile : listFiles) {
             // backup?
+            // todo: partly delete
             FileUtils.forceDelete(listFile);
         }
         List<Index.Entry> entries = index.getEntries();
@@ -523,28 +535,41 @@ public class GitLite {
             throw new RuntimeException("remoteLogManager is not exist");
         }
 
+        initRemoteDirs(remoteName);
+
         // fetch哪些就push哪些
-        // 1. 根据最新commitObjectId获取更新了那些文件
+        // 1. 根据commit链, 将所有提交导致的变化objectId全部上传
         String localCommitObjectId = findLocalCommitObjectId();
         String remoteCommitObjectId = findRemoteCommitObjectId(remoteName);
 
-        Index committedHeadIndex = Index.generateFromCommit(localCommitObjectId, objectManager);
-        Index remoteHeadIndex = Index.generateFromCommit(remoteCommitObjectId, objectManager);
+        List<LogItem> committedLogs = localLogManager.getLogs();
+        List<CommitChainItem> chain = getCommitChain(committedLogs, localCommitObjectId, remoteCommitObjectId);
 
-        IndexDiffResult committedDiff = IndexDiffer.diff(committedHeadIndex, remoteHeadIndex);
-        log.debug("committedDiff to push: {}", JsonUtils.writeValueAsString(committedDiff));
+        IndexDiffResult combinedDiff = new IndexDiffResult();
+        for (CommitChainItem commitChainItem : chain) {
+            Index thisIndex = Index.generateFromCommit(commitChainItem.getCommitObjectId(), objectManager);
+            if (commitChainItem.getParent() == null){
+                break;
+            }
+            Index parentIndex = Index.generateFromCommit(commitChainItem.getParent().getCommitObjectId(), objectManager);
+            IndexDiffResult committedDiff = IndexDiffer.diff(thisIndex, parentIndex);
+            log.debug("committedDiff to push: {}", JsonUtils.writeValueAsString(committedDiff));
 
-        if (!committedDiff.isChanged()) {
+            // 2. 上传objects
+            combinedDiff.getAdded().addAll(committedDiff.getAdded());
+            combinedDiff.getUpdated().addAll(committedDiff.getUpdated());
+            combinedDiff.getRemoved().addAll(committedDiff.getRemoved());
+        }
+
+        if (!combinedDiff.isChanged()){
             log.info("nothing changed, no push");
             return;
         }
 
-        initRemoteDirs(remoteName);
-
-        // 2. 上传objects
         Set<Index.Entry> changedEntries = new HashSet<>();
-        changedEntries.addAll(committedDiff.getAdded());
-        changedEntries.addAll(committedDiff.getUpdated());
+        changedEntries.addAll(combinedDiff.getAdded());
+        changedEntries.addAll(combinedDiff.getUpdated());
+
         //  upload
         Set<String> dirs = changedEntries.stream().map(x -> PathUtils.parent(ObjectUtils.path(x.getObjectId()))).map(x -> PathUtils.concat("objects", x)).collect(Collectors.toSet());
         remoteStorage.mkdir(dirs);
@@ -554,7 +579,29 @@ public class GitLite {
         }
 
         // 2. 上传commitObject，上传treeObject
-        uploadCommitObjectAndTreeObjectRecursive(localCommitObjectId, remoteStorage);
+        for (CommitChainItem commitChainItem : chain) {
+            if (commitChainItem.getParent() != null){
+                // 没有用uploadCommitObjectAndTreeObjectRecursive是为了减少不必要的上传
+                // 查找变化的treeObjectId
+                Map<String, String> parentPath2TreeObjectIdMap = new HashMap<>();
+                getChangedTreeObjectRecursive(commitChainItem.getParent().getCommitObjectId(), "", parentPath2TreeObjectIdMap);
+                Map<String, String> thisPath2TreeObjectIdMap = new HashMap<>();
+                getChangedTreeObjectRecursive(commitChainItem.getCommitObjectId(), "", thisPath2TreeObjectIdMap);
+                Set<String> changedTreeObjectIds = new HashSet<>();
+                for (String path : thisPath2TreeObjectIdMap.keySet()) {
+                    if (parentPath2TreeObjectIdMap.get(path)!= null && Objects.equals(parentPath2TreeObjectIdMap.get(path), thisPath2TreeObjectIdMap.get(path))){
+                        continue;
+                    }
+                    changedTreeObjectIds.add(thisPath2TreeObjectIdMap.get(path));
+                }
+                for (String changedTreeObjectId : changedTreeObjectIds) {
+                    remoteStorage.upload(ObjectUtils.getObjectFile(config.getObjectsDir(), changedTreeObjectId), PathUtils.concat("objects", ObjectUtils.path(changedTreeObjectId)));
+                }
+
+                // 上传commitObjectId
+                remoteStorage.upload(ObjectUtils.getObjectFile(config.getObjectsDir(), commitChainItem.getCommitObjectId()), PathUtils.concat("objects", ObjectUtils.path(commitChainItem.getCommitObjectId())));
+            }
+        }
 
         // 3. 写remote日志(异常回退)
         LogItem localCommitLogItem = localLogManager.getLogs().stream().filter(x -> Objects.equals(x.getCommitObjectId(), localCommitObjectId)).findFirst().orElse(null);
@@ -610,6 +657,29 @@ public class GitLite {
 
     }
 
+    @NotNull
+    private List<CommitChainItem> getCommitChain(List<LogItem> logs, String newerCommitObjectId, String olderCommitObjectId) throws IOException {
+        List<CommitChainItem> chain = new LinkedList<>();
+        for (LogItem committedLog : logs) {
+            if (Objects.equals(committedLog.getCommitObjectId(), olderCommitObjectId) ){
+                CommitChainItem commitChainItem = new CommitChainItem();
+                commitChainItem.setCommitObjectId(committedLog.getCommitObjectId());
+                commitChainItem.setParent(null);
+                chain.add(0, commitChainItem);
+            }else if (CollectionUtils.isNotEmpty(chain)){
+                CommitChainItem commitChainItem = new CommitChainItem();
+                commitChainItem.setCommitObjectId(committedLog.getCommitObjectId());
+                commitChainItem.setParent(chain.get(0));
+                chain.add(0, commitChainItem);
+            }
+            if (Objects.equals(committedLog.getCommitObjectId(), newerCommitObjectId) ) {
+                break;
+            }
+        }
+        return chain;
+    }
+
+    @Deprecated
     private void uploadCommitObjectAndTreeObjectRecursive(String objectId, Storage remoteStorage) throws IOException {
         File objectFile = ObjectUtils.getObjectFile(config.getObjectsDir(), objectId);
         ObjectEntity objectEntity = objectManager.read(objectId);
@@ -634,7 +704,34 @@ public class GitLite {
             default:
                 throw new RuntimeException("type error");
         }
+    }
 
+    private void getChangedTreeObjectRecursive(String objectId, String path, Map<String,String> path2TreeObjectIdMap) throws IOException {
+        ObjectEntity objectEntity = objectManager.read(objectId);
+        switch (objectEntity.getType()) {
+            case commit:
+                CommitObjectData commitObjectData = CommitObjectData.parseFrom(objectEntity.getData());
+                String tree = commitObjectData.getTree();
+                path2TreeObjectIdMap.put("", tree);
+                getChangedTreeObjectRecursive(tree,"", path2TreeObjectIdMap);
+                break;
+            case tree:
+                TreeObjectData treeObjectData = TreeObjectData.parseFrom(objectEntity.getData());
+                List<TreeObjectData.TreeEntry> entries = treeObjectData.getEntries();
+                for (TreeObjectData.TreeEntry entry : entries) {
+                    if (entry.getType() == ObjectEntity.Type.tree){
+                        String treePath = PathUtils.concat(path, entry.getName());
+                        path2TreeObjectIdMap.put(treePath, entry.getObjectId());
+                        getChangedTreeObjectRecursive(entry.getObjectId(), treePath, path2TreeObjectIdMap);
+                    }
+                }
+                break;
+            case blob:
+                // do nothing
+                break;
+            default:
+                throw new RuntimeException("type error");
+        }
     }
 
 
@@ -679,6 +776,12 @@ public class GitLite {
         String getFileName() {
             return file.getName();
         }
+    }
+
+    @Data
+    private static class CommitChainItem{
+        private String commitObjectId;
+        private CommitChainItem parent;
     }
 
 }
