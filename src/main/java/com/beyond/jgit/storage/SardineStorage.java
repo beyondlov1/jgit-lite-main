@@ -36,7 +36,7 @@ public class SardineStorage extends AbstractStorage {
     @Override
     public boolean exists(String path) throws IOException {
         String absPath = getAbsPath(path);
-        if (existDirs.contains(PathUtils.parent(absPath))) {
+        if (existDirs.contains(absPath)) {
             return true;
         }
         return sardine.exists(absPath);

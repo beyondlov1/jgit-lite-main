@@ -24,6 +24,15 @@ public class LogManager {
         this.logLockPath = logPath + ".lock";
     }
 
+    public static List<LogItem> getLogsFromFile(File logFile) throws IOException {
+        if (!logFile.exists()) {
+            return null;
+        }
+        String json = FileUtils.readFileToString(logFile, StandardCharsets.UTF_8);
+        return JsonUtils.readValue(json, new TypeReference<List<LogItem>>() {
+        });
+    }
+
 
     public void appendToLock(LogItem logItem) throws IOException {
         LogItem lastLogItem = getLastLogItem();

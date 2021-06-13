@@ -307,13 +307,13 @@ public class GitLite {
         // 根据 remote head 判断需要下载那些objects
         String remoteCommitObjectId = findRemoteCommitObjectId(remoteName);
         String remoteLockCommitObjectId = findRemoteLockCommitObjectId(remoteName);
-        if (!remoteHeadFile.exists() || logs == null){
+        if (!remoteHeadFile.exists() || logs == null) {
             log.warn("local/remote log is empty, no fetch");
             return;
         }
         List<CommitChainItem> chain = getCommitChain(logs, remoteLockCommitObjectId, remoteCommitObjectId);
         for (CommitChainItem commitChainItem : chain) {
-            if (commitChainItem.getParent() != null){
+            if (commitChainItem.getParent() != null) {
                 downloadByObjectIdRecursive(remoteLockCommitObjectId, remoteStorage);
             }
         }
@@ -353,7 +353,7 @@ public class GitLite {
                 TreeObjectData treeObjectData = TreeObjectData.parseFrom(objectEntity.getData());
                 List<TreeObjectData.TreeEntry> entries = treeObjectData.getEntries();
                 for (TreeObjectData.TreeEntry entry : entries) {
-                    downloadByObjectIdRecursive(entry.getObjectId(),remoteStorage);
+                    downloadByObjectIdRecursive(entry.getObjectId(), remoteStorage);
                 }
                 break;
             case blob:
@@ -367,7 +367,7 @@ public class GitLite {
 
     public void checkout(String commitObjectId) throws IOException {
         Index targetIndex = Index.generateFromCommit(commitObjectId, objectManager);
-        Index localIndex =  Index.generateFromLocalDir(config.getLocalDir());
+        Index localIndex = Index.generateFromLocalDir(config.getLocalDir());
 
         IndexDiffResult diff = IndexDiffer.diff(targetIndex, localIndex);
         Set<Index.Entry> removed = diff.getRemoved();
@@ -423,7 +423,7 @@ public class GitLite {
             }
         }
         if (intersectionCommitObjectId == null) {
-            log.warn("无相同的commitObjectId, remote log is empty, cover.");
+            log.warn("no intersectionCommitObjectId, remote log is empty, cover.");
         }
 
         String localCommitObjectId = findLocalCommitObjectId();
@@ -546,13 +546,16 @@ public class GitLite {
         String localCommitObjectId = findLocalCommitObjectId();
         String remoteCommitObjectId = findRemoteCommitObjectId(remoteName);
 
+        // 检查本地的remote和远程的remote是否有异常, 比如远程的文件被修改了导致本地的晚于远程
+        checkWebRemoteStatus(remoteName, remoteStorage, remoteLogManager);
+
         List<LogItem> committedLogs = localLogManager.getLogs();
         List<CommitChainItem> chain = getCommitChain(committedLogs, localCommitObjectId, remoteCommitObjectId);
 
         IndexDiffResult combinedDiff = new IndexDiffResult();
         for (CommitChainItem commitChainItem : chain) {
             Index thisIndex = Index.generateFromCommit(commitChainItem.getCommitObjectId(), objectManager);
-            if (commitChainItem.getParent() == null){
+            if (commitChainItem.getParent() == null) {
                 break;
             }
             Index parentIndex = Index.generateFromCommit(commitChainItem.getParent().getCommitObjectId(), objectManager);
@@ -565,7 +568,7 @@ public class GitLite {
             combinedDiff.getRemoved().addAll(committedDiff.getRemoved());
         }
 
-        if (!combinedDiff.isChanged()){
+        if (!combinedDiff.isChanged()) {
             log.info("nothing changed, no push");
             return;
         }
@@ -584,7 +587,7 @@ public class GitLite {
 
         // 2. 上传commitObject，上传treeObject
         for (CommitChainItem commitChainItem : chain) {
-            if (commitChainItem.getParent() != null){
+            if (commitChainItem.getParent() != null) {
                 // 没有用uploadCommitObjectAndTreeObjectRecursive是为了减少不必要的上传
                 // 查找变化的treeObjectId
                 Map<String, String> parentPath2TreeObjectIdMap = new HashMap<>();
@@ -593,7 +596,7 @@ public class GitLite {
                 getChangedTreeObjectRecursive(commitChainItem.getCommitObjectId(), "", thisPath2TreeObjectIdMap);
                 Set<String> changedTreeObjectIds = new HashSet<>();
                 for (String path : thisPath2TreeObjectIdMap.keySet()) {
-                    if (parentPath2TreeObjectIdMap.get(path)!= null && Objects.equals(parentPath2TreeObjectIdMap.get(path), thisPath2TreeObjectIdMap.get(path))){
+                    if (parentPath2TreeObjectIdMap.get(path) != null && Objects.equals(parentPath2TreeObjectIdMap.get(path), thisPath2TreeObjectIdMap.get(path))) {
                         continue;
                     }
                     changedTreeObjectIds.add(thisPath2TreeObjectIdMap.get(path));
@@ -661,22 +664,58 @@ public class GitLite {
 
     }
 
+    private void checkWebRemoteStatus(String remoteName, Storage remoteStorage, LogManager remoteLogManager) throws IOException {
+        String currRemoteLogsDir = PathUtils.concat(config.getLogsRemotesDir(), remoteName);
+        File remoteLogFile = new File(PathUtils.concat(currRemoteLogsDir, "master.json"));
+        File remoteLogLockFile = new File(PathUtils.concat(currRemoteLogsDir, "master.json.lock"));
+        boolean webRemoteLogExists = remoteStorage.exists(PathUtils.concat("logs", "remotes", remoteName, "master.json"));
+        if (!webRemoteLogExists && remoteLogFile.exists()) {
+            throw new RuntimeException("web remote logs is empty, but file remote logs is not empty");
+        }
+        if (!webRemoteLogExists && !remoteLogFile.exists()) {
+            return;
+        }
+        try {
+            remoteStorage.download(PathUtils.concat("logs", "remotes", remoteName, "master.json"), remoteLogLockFile);
+            List<LogItem> webRemoteLogItems = LogManager.getLogsFromFile(remoteLogLockFile);
+            List<LogItem> fileRemoteLogItems = LogManager.getLogsFromFile(remoteLogFile);
+            if (CollectionUtils.isEmpty(webRemoteLogItems) && CollectionUtils.isEmpty(fileRemoteLogItems)) {
+                log.warn("web remote logs is empty, but file remote logs is not empty");
+            }
+            if (CollectionUtils.isEmpty(webRemoteLogItems) && CollectionUtils.isNotEmpty(fileRemoteLogItems)) {
+                throw new RuntimeException("web remote logs is empty, but file remote logs is not empty");
+            }
+            if (CollectionUtils.isNotEmpty(webRemoteLogItems) && CollectionUtils.isEmpty(fileRemoteLogItems)) {
+                throw new RuntimeException("file remote logs is empty/null");
+            }
+            assert webRemoteLogItems != null;
+            assert fileRemoteLogItems != null;
+            if (!webRemoteLogItems.containsAll(fileRemoteLogItems)) {
+                throw new RuntimeException("file remote has some commit not push.");
+            }
+        } finally {
+            if (remoteLogLockFile.exists()) {
+                FileUtils.forceDelete(remoteLogLockFile);
+            }
+        }
+    }
+
     @NotNull
     private List<CommitChainItem> getCommitChain(List<LogItem> logs, String newerCommitObjectId, String olderCommitObjectId) throws IOException {
         List<CommitChainItem> chain = new LinkedList<>();
         for (LogItem committedLog : logs) {
-            if (Objects.equals(committedLog.getCommitObjectId(), olderCommitObjectId) ){
+            if (chain.isEmpty() && (olderCommitObjectId == null || Objects.equals(committedLog.getCommitObjectId(), olderCommitObjectId))) {
                 CommitChainItem commitChainItem = new CommitChainItem();
                 commitChainItem.setCommitObjectId(committedLog.getCommitObjectId());
                 commitChainItem.setParent(null);
                 chain.add(0, commitChainItem);
-            }else if (CollectionUtils.isNotEmpty(chain)){
+            } else if (CollectionUtils.isNotEmpty(chain)) {
                 CommitChainItem commitChainItem = new CommitChainItem();
                 commitChainItem.setCommitObjectId(committedLog.getCommitObjectId());
                 commitChainItem.setParent(chain.get(0));
                 chain.add(0, commitChainItem);
             }
-            if (Objects.equals(committedLog.getCommitObjectId(), newerCommitObjectId) ) {
+            if (Objects.equals(committedLog.getCommitObjectId(), newerCommitObjectId)) {
                 break;
             }
         }
@@ -699,7 +738,7 @@ public class GitLite {
                 TreeObjectData treeObjectData = TreeObjectData.parseFrom(objectEntity.getData());
                 List<TreeObjectData.TreeEntry> entries = treeObjectData.getEntries();
                 for (TreeObjectData.TreeEntry entry : entries) {
-                    uploadCommitObjectAndTreeObjectRecursive(entry.getObjectId(),remoteStorage);
+                    uploadCommitObjectAndTreeObjectRecursive(entry.getObjectId(), remoteStorage);
                 }
                 break;
             case blob:
@@ -710,20 +749,20 @@ public class GitLite {
         }
     }
 
-    private void getChangedTreeObjectRecursive(String objectId, String path, Map<String,String> path2TreeObjectIdMap) throws IOException {
+    private void getChangedTreeObjectRecursive(String objectId, String path, Map<String, String> path2TreeObjectIdMap) throws IOException {
         ObjectEntity objectEntity = objectManager.read(objectId);
         switch (objectEntity.getType()) {
             case commit:
                 CommitObjectData commitObjectData = CommitObjectData.parseFrom(objectEntity.getData());
                 String tree = commitObjectData.getTree();
                 path2TreeObjectIdMap.put("", tree);
-                getChangedTreeObjectRecursive(tree,"", path2TreeObjectIdMap);
+                getChangedTreeObjectRecursive(tree, "", path2TreeObjectIdMap);
                 break;
             case tree:
                 TreeObjectData treeObjectData = TreeObjectData.parseFrom(objectEntity.getData());
                 List<TreeObjectData.TreeEntry> entries = treeObjectData.getEntries();
                 for (TreeObjectData.TreeEntry entry : entries) {
-                    if (entry.getType() == ObjectEntity.Type.tree){
+                    if (entry.getType() == ObjectEntity.Type.tree) {
                         String treePath = PathUtils.concat(path, entry.getName());
                         path2TreeObjectIdMap.put(treePath, entry.getObjectId());
                         getChangedTreeObjectRecursive(entry.getObjectId(), treePath, path2TreeObjectIdMap);
@@ -783,7 +822,7 @@ public class GitLite {
     }
 
     @Data
-    private static class CommitChainItem{
+    private static class CommitChainItem {
         private String commitObjectId;
         private CommitChainItem parent;
     }
