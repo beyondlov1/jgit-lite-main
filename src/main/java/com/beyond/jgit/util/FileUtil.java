@@ -53,6 +53,17 @@ public class FileUtil {
         return Arrays.asList(files);
     }
 
+    public static  Collection<File> listChildOnlyFilesWithoutDirOf(String rootPath,String... excludeNames) {
+        Collection<File> files = listFilesAndDirsWithoutNameOf(rootPath, excludeNames);
+        Set<File> newSet = new HashSet<>();
+        for (File file : files) {
+            if (file.isFile()){
+                newSet.add(file);
+            }
+        }
+        return newSet;
+    }
+
 
     public static void main(String[] args) {
         Collection<File> files = listChildFilesWithoutDirOf("/home/beyond/Documents/tmp-git-2-local", ".git");

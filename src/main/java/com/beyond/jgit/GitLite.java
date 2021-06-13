@@ -366,15 +366,19 @@ public class GitLite {
     }
 
     public void checkout(String commitObjectId) throws IOException {
-        Index index = Index.generateFromCommit(commitObjectId, objectManager);
-        Collection<File> listFiles = FileUtil.listChildFilesWithoutDirOf(PathUtils.concat(config.getLocalDir()), ".git");
-        for (File listFile : listFiles) {
-            // backup?
-            // todo: partly delete
-            FileUtils.forceDelete(listFile);
+        Index targetIndex = Index.generateFromCommit(commitObjectId, objectManager);
+        Index localIndex =  Index.generateFromLocalDir(config.getLocalDir());
+
+        IndexDiffResult diff = IndexDiffer.diff(targetIndex, localIndex);
+        Set<Index.Entry> removed = diff.getRemoved();
+        for (Index.Entry entry : removed) {
+            FileUtils.forceDelete(new File(PathUtils.concat(config.getLocalDir(), entry.getPath())));
         }
-        List<Index.Entry> entries = index.getEntries();
-        for (Index.Entry entry : entries) {
+
+        List<Index.Entry> changedEntries = new ArrayList<>();
+        changedEntries.addAll(diff.getAdded());
+        changedEntries.addAll(diff.getUpdated());
+        for (Index.Entry entry : changedEntries) {
             String absPath = PathUtils.concat(config.getLocalDir(), entry.getPath());
             ObjectEntity objectEntity = objectManager.read(entry.getObjectId());
             if (objectEntity.getType() == ObjectEntity.Type.blob) {

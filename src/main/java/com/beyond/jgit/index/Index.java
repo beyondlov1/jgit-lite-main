@@ -4,7 +4,9 @@ import com.beyond.jgit.object.ObjectEntity;
 import com.beyond.jgit.object.ObjectManager;
 import com.beyond.jgit.object.data.CommitObjectData;
 import com.beyond.jgit.object.data.TreeObjectData;
+import com.beyond.jgit.util.FileUtil;
 import com.beyond.jgit.util.JsonUtils;
+import com.beyond.jgit.util.ObjectUtils;
 import com.beyond.jgit.util.PathUtils;
 import lombok.Data;
 import org.apache.commons.io.FileUtils;
@@ -40,6 +42,20 @@ public class Index {
         public enum Flag {
             NONE
         }
+    }
+
+    public static Index generateFromLocalDir(String localDir) throws IOException {
+        Collection<File> files = FileUtil.listChildOnlyFilesWithoutDirOf(localDir, ".git");
+        Index index = new Index();
+        List<Entry> entries = index.getEntries();
+        for (File file : files) {
+            Entry entry = new Entry();
+            entry.setPath(PathUtils.getRelativePath(localDir,file.getAbsolutePath()));
+            entry.setObjectId(ObjectUtils.sha1hash(ObjectEntity.Type.blob, file));
+            entries.add(entry);
+        }
+        entries.sort(Comparator.comparing(Entry::getPath));
+        return index;
     }
 
 

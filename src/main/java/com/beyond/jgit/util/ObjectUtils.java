@@ -3,7 +3,7 @@ package com.beyond.jgit.util;
 import com.beyond.jgit.object.ObjectEntity;
 import org.apache.commons.codec.digest.DigestUtils;
 
-import java.io.File;
+import java.io.*;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 
@@ -20,11 +20,32 @@ public class ObjectUtils {
         }
     }
 
-    public static String sha1hash(ObjectEntity.Type type, byte[] rawData) {
-        return sha1hash(buildObjectBytes(type,rawData));
+    public static String sha1hash(InputStream inputStream) throws IOException {
+        return DigestUtils.sha1Hex(inputStream);
     }
+
+    public static String sha1hash(ObjectEntity.Type type, File file) throws IOException {
+        try(FileInputStream fileInputStream = new FileInputStream(file);
+            ByteArrayInputStream headInputStream = new ByteArrayInputStream((type.name().toLowerCase() + " " + fileInputStream.available() + "\0").getBytes());
+            SequenceInputStream sequenceInputStream = new SequenceInputStream(headInputStream, fileInputStream)) {
+            return sha1hash(sequenceInputStream);
+        }
+    }
+
+    public static String sha1hash(ObjectEntity.Type type, InputStream contentInputStream) throws IOException {
+        try(ByteArrayInputStream headInputStream = new ByteArrayInputStream((type.name().toLowerCase() + " " + contentInputStream.available() + "\0").getBytes());
+            SequenceInputStream sequenceInputStream = new SequenceInputStream(headInputStream, contentInputStream)) {
+            return sha1hash(sequenceInputStream);
+        }
+    }
+
+
+    public static String sha1hash(ObjectEntity.Type type, byte[] rawData) {
+        return sha1hash(buildObjectBytes(type, rawData));
+    }
+
     public static String sha1hash(ObjectEntity objectEntity) {
-        return sha1hash(buildObjectBytes(objectEntity.getType(),objectEntity.getData()));
+        return sha1hash(buildObjectBytes(objectEntity.getType(), objectEntity.getData()));
     }
 
     public static byte[] buildObjectBytes(ObjectEntity.Type type, byte[] rawData) {
@@ -38,20 +59,20 @@ public class ObjectUtils {
         return newBytes;
     }
 
-    public static File getObjectFile(String objectsDir, String objectId){
+    public static File getObjectFile(String objectsDir, String objectId) {
         String path = ObjectUtils.path(objectId);
         Path absPath = Paths.get(objectsDir, path);
         return absPath.toFile();
     }
 
-    public static String path(String objectId){
+    public static String path(String objectId) {
         String dir = objectId.substring(0, 2);
         String name = objectId.substring(2);
         return dir + File.separator + name;
     }
 
-    public static String getModeByType(ObjectEntity.Type type){
-        switch (type){
+    public static String getModeByType(ObjectEntity.Type type) {
+        switch (type) {
             case blob:
                 return "100644";
             case tree:
@@ -61,8 +82,8 @@ public class ObjectUtils {
         }
     }
 
-    public static ObjectEntity.Type getTypeByMode(String mode){
-        switch (mode){
+    public static ObjectEntity.Type getTypeByMode(String mode) {
+        switch (mode) {
             case "100644":
                 return ObjectEntity.Type.blob;
             case "40000":
