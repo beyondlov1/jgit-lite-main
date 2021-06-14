@@ -14,6 +14,7 @@ import com.beyond.jgit.object.data.TreeObjectData;
 import com.beyond.jgit.storage.FileStorage;
 import com.beyond.jgit.storage.SardineStorage;
 import com.beyond.jgit.storage.Storage;
+import com.beyond.jgit.storage.TransportMapping;
 import com.beyond.jgit.util.FileUtil;
 import com.beyond.jgit.util.JsonUtils;
 import com.beyond.jgit.util.ObjectUtils;
@@ -67,7 +68,8 @@ public class GitLite {
                             new SardineStorage(PathUtils.concat(remoteConfig.getRemoteUrl(), ".git"),
                                     remoteConfig.getRemoteUserName(),
                                     remoteConfig.getRemotePassword(),
-                                    PathUtils.concat(remoteConfig.getRemoteTmpDir(), remoteConfig.getRemoteName() + ".ed")));
+                                    PathUtils.concat(remoteConfig.getRemoteTmpDir(), remoteConfig.getRemoteName(),"master.ed"),
+                                    PathUtils.concat(remoteConfig.getRemoteTmpDir(), remoteConfig.getRemoteName(), "session")));
                 } else {
                     remoteStorageMap.put(remoteConfig.getRemoteName(),
                             new SardineStorage(PathUtils.concat(remoteConfig.getRemoteUrl(), ".git"),
@@ -257,6 +259,7 @@ public class GitLite {
 
 
     public void fetch(String remoteName) throws IOException {
+        // todo:下载日志,防止远程被限制频率
         Storage remoteStorage = remoteStorageMap.get(remoteName);
         if (remoteStorage == null) {
             throw new RuntimeException("remoteStorage is not exist");
@@ -530,6 +533,7 @@ public class GitLite {
     }
 
     public void push(String remoteName) throws IOException {
+        // todo:上传日志,防止远程被限制频率
         Storage remoteStorage = remoteStorageMap.get(remoteName);
         if (remoteStorage == null) {
             throw new RuntimeException("remoteStorage is not exist");
@@ -578,11 +582,11 @@ public class GitLite {
         changedEntries.addAll(combinedDiff.getUpdated());
 
         //  upload
+        List<String> objectIdsToUpload = new ArrayList<>();
         Set<String> dirs = changedEntries.stream().map(x -> PathUtils.parent(ObjectUtils.path(x.getObjectId()))).map(x -> PathUtils.concat("objects", x)).collect(Collectors.toSet());
         remoteStorage.mkdir(dirs);
         for (Index.Entry changedEntry : changedEntries) {
-            File objectFile = ObjectUtils.getObjectFile(config.getObjectsDir(), changedEntry.getObjectId());
-            remoteStorage.upload(objectFile, PathUtils.concat("objects", ObjectUtils.path(changedEntry.getObjectId())));
+            objectIdsToUpload.add(changedEntry.getObjectId());
         }
 
         // 2. 上传commitObject，上传treeObject
@@ -601,14 +605,15 @@ public class GitLite {
                     }
                     changedTreeObjectIds.add(thisPath2TreeObjectIdMap.get(path));
                 }
-                for (String changedTreeObjectId : changedTreeObjectIds) {
-                    remoteStorage.upload(ObjectUtils.getObjectFile(config.getObjectsDir(), changedTreeObjectId), PathUtils.concat("objects", ObjectUtils.path(changedTreeObjectId)));
-                }
+                objectIdsToUpload.addAll(changedTreeObjectIds);
 
                 // 上传commitObjectId
-                remoteStorage.upload(ObjectUtils.getObjectFile(config.getObjectsDir(), commitChainItem.getCommitObjectId()), PathUtils.concat("objects", ObjectUtils.path(commitChainItem.getCommitObjectId())));
+                objectIdsToUpload.add(commitChainItem.getCommitObjectId());
             }
         }
+
+        // upload with session, dont resort
+        remoteStorage.uploadBatch(objectIdsToUpload.stream().map(x-> TransportMapping.of(ObjectUtils.getObjectPath(config.getObjectsDir(), x), PathUtils.concat("objects", ObjectUtils.path(x)))).collect(Collectors.toList()));
 
         // 3. 写remote日志(异常回退)
         LogItem localCommitLogItem = localLogManager.getLogs().stream().filter(x -> Objects.equals(x.getCommitObjectId(), localCommitObjectId)).findFirst().orElse(null);

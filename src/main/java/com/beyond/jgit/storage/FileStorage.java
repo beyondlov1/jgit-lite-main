@@ -6,6 +6,7 @@ import org.apache.commons.io.FileUtils;
 import java.io.File;
 import java.io.IOException;
 import java.util.Collection;
+import java.util.List;
 
 public class FileStorage extends AbstractStorage {
 
@@ -23,6 +24,13 @@ public class FileStorage extends AbstractStorage {
     @Override
     public void upload(File file, String targetPath) throws IOException {
         FileUtils.copyFile(file, new File(PathUtils.concat(basePath, targetPath)));
+    }
+
+    @Override
+    public void uploadBatch(List<TransportMapping> mappings) throws IOException {
+        for (TransportMapping mapping : mappings) {
+            upload(new File(mapping.getLocalPath()), mapping.getRemotePath());
+        }
     }
 
     @Override

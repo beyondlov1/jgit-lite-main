@@ -65,6 +65,12 @@ public class ObjectUtils {
         return absPath.toFile();
     }
 
+    public static String getObjectPath(String objectsDir, String objectId) {
+        String path = ObjectUtils.path(objectId);
+        Path absPath = Paths.get(objectsDir, path);
+        return absPath.toString();
+    }
+
     public static String path(String objectId) {
         String dir = objectId.substring(0, 2);
         String name = objectId.substring(2);
