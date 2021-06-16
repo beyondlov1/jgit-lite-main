@@ -244,7 +244,12 @@ public class GitLite {
         commitObjectData.setCommitter(user);
         commitObjectData.setAuthor(user);
         commitObjectData.setMessage(message);
-        commitObjectData.addParent(localLogManager.getLastLogItem().getCommitObjectId());
+        LogItem lastLogItem = localLogManager.getLastLogItem();
+        if (lastLogItem == null){
+            commitObjectData.addParent(EMPTY_OBJECT_ID);
+        }else{
+            commitObjectData.addParent(lastLogItem.getCommitObjectId());
+        }
 
         ObjectEntity commitObjectEntity = new ObjectEntity();
         commitObjectEntity.setType(ObjectEntity.Type.commit);
@@ -258,8 +263,64 @@ public class GitLite {
 
 
     //todo
-    public void clone(String remoteName){
+    public void clone(String remoteName) throws IOException {
+        Storage remoteStorage = remoteStorageMap.get(remoteName);
+        if (remoteStorage == null) {
+            throw new RuntimeException("remoteStorage is not exist");
+        }
+        LogManager remoteLogManager = remoteLogManagerMap.get(remoteName);
+        if (remoteLogManager == null) {
+            throw new RuntimeException("remoteLogManager is not exist");
+        }
+        if (!remoteStorage.exists(PathUtils.concat("refs", "remotes", remoteName, "master"))) {
+            log.warn("remote is empty");
+            return;
+        }
 
+        init();
+        initRemoteDirs(remoteName);
+
+        // fetch remote head to remote head lock
+        // locked?
+        File remoteHeadFile = new File(PathUtils.concat(config.getRefsRemotesDir(), remoteName, "master"));
+        remoteStorage.download(PathUtils.concat("refs", "remotes", remoteName, "master"), remoteHeadFile);
+
+        // 根据 remote head 判断需要下载那些objects
+        String webRemoteLatestCommitObjectId = findRemoteCommitObjectId(remoteName);
+        downloadByObjectIdRecursive(webRemoteLatestCommitObjectId, remoteStorage);
+
+        ObjectEntity commitObjectEntity = objectManager.read(webRemoteLatestCommitObjectId);
+        CommitObjectData commitObjectData = CommitObjectData.parseFrom(commitObjectEntity.getData());
+
+        LogItem logItem = new LogItem();
+        logItem.setParentCommitObjectId(EMPTY_OBJECT_ID);
+        logItem.setCommitObjectId(webRemoteLatestCommitObjectId);
+        logItem.setCommitterName(commitObjectData.getCommitter().getName());
+        logItem.setCommitterEmail(commitObjectData.getCommitter().getEmail());
+        logItem.setMessage("clone");
+        logItem.setMtime(System.currentTimeMillis());
+
+        File refsHeadLockFile = new File(PathUtils.concat(config.getRefsHeadsDir(), "master.lock"));
+        try {
+            remoteLogManager.lock();
+            remoteLogManager.writeToLock(Collections.singletonList(logItem));
+            localLogManager.lock();
+            localLogManager.writeToLock(Collections.singletonList(logItem));
+            FileUtils.write(refsHeadLockFile,webRemoteLatestCommitObjectId,StandardCharsets.UTF_8);
+
+            remoteLogManager.commit();
+            localLogManager.commit();
+            Files.move(refsHeadLockFile.toPath(), new File(PathUtils.concat(config.getRefsHeadsDir(), "master")).toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+
+        }catch (Exception e){
+            log.error("clone fail",e);
+            remoteLogManager.rollback();
+            localLogManager.rollback();
+            FileUtils.deleteQuietly(refsHeadLockFile);
+            return;
+        }
+
+        checkout(webRemoteLatestCommitObjectId);
     }
 
 
@@ -318,8 +379,6 @@ public class GitLite {
 
 
         // update head
-        remoteStorage.download(PathUtils.concat("refs", "remotes", remoteName, "master"), remoteHeadLockFile);
-
         Files.move(remoteHeadLockFile.toPath(), remoteHeadFile.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
 
     }
@@ -426,7 +485,7 @@ public class GitLite {
         IndexDiffResult diff = IndexDiffer.diff(targetIndex, localIndex);
         Set<Index.Entry> removed = diff.getRemoved();
         for (Index.Entry entry : removed) {
-            FileUtils.forceDelete(new File(PathUtils.concat(config.getLocalDir(), entry.getPath())));
+            FileUtils.deleteQuietly(new File(PathUtils.concat(config.getLocalDir(), entry.getPath())));
         }
 
         List<Index.Entry> changedEntries = new ArrayList<>();
@@ -440,6 +499,9 @@ public class GitLite {
                 FileUtils.writeByteArrayToFile(new File(absPath), blobObjectData.getData());
             }
         }
+
+        Index index = Index.generateFromCommit(commitObjectId, objectManager);
+        indexManager.save(index);
     }
 
 
@@ -457,6 +519,8 @@ public class GitLite {
         }
 
         List<LogItem> committedLogs = localLogManager.getLogs();
+
+        // fixme： 不用remotelog， 直接比较两个的差异
         List<LogItem> remoteLogs = remoteLogManager.getLogs();
 
         if (committedLogs == null) {
@@ -681,28 +745,32 @@ public class GitLite {
         remoteLogItem.setCommitterEmail(localCommitLogItem.getCommitterEmail());
         remoteLogItem.setMessage("push");
         remoteLogItem.setMtime(System.currentTimeMillis());
-        remoteLogManager.lock();
-        remoteLogManager.appendToLock(remoteLogItem);
 
-        // 5. 修改本地remote的head(异常回退)
         String currRemoteRefsDir = PathUtils.concat(config.getRefsRemotesDir(), remoteName);
         File remoteHeadFile = new File(currRemoteRefsDir, "master");
         File remoteHeadLockFile = new File(remoteHeadFile.getAbsolutePath() + ".lock");
-        FileUtils.copyFile(new File(PathUtils.concat(config.getRefsHeadsDir(), "master")), remoteHeadLockFile);
-        FileUtils.writeStringToFile(remoteHeadLockFile, localCommitObjectId, StandardCharsets.UTF_8);
 
-        // 6. 上传remote的head
         try {
+            remoteLogManager.lock();
+            remoteLogManager.appendToLock(remoteLogItem);
+
+            // 5. 修改本地remote的head(异常回退)
+            FileUtils.copyFile(new File(PathUtils.concat(config.getRefsHeadsDir(), "master")), remoteHeadLockFile);
+            FileUtils.writeStringToFile(remoteHeadLockFile, localCommitObjectId, StandardCharsets.UTF_8);
+
+            // 6. 上传remote的head
             //  upload remote head lock to remote head
             remoteStorage.upload(new File(PathUtils.concat(config.getRefsHeadsDir(), "master")),
                     PathUtils.concat("refs", "remotes", remoteName, "master"));
+
             Files.move(remoteHeadLockFile.toPath(), remoteHeadFile.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            remoteLogManager.commit();
         } catch (Exception e) {
-            log.error("上传日志失败", e);
-            FileUtils.forceDelete(remoteHeadLockFile);
+            log.error("上传head失败", e);
+            FileUtils.deleteQuietly(remoteHeadLockFile);
+            remoteLogManager.rollback();
             throw e;
         }
-
     }
 
     // 包新不包旧

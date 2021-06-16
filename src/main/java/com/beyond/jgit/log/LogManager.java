@@ -100,7 +100,7 @@ public class LogManager {
     }
 
     public void rollback() throws IOException {
-        FileUtils.forceDelete(new File(logLockPath));
+        FileUtils.deleteQuietly(new File(logLockPath));
     }
 
     public void commit() throws IOException {
