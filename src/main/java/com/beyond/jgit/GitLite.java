@@ -368,6 +368,7 @@ public class GitLite {
         String remoteLockCommitObjectId = findRemoteLockCommitObjectId(remoteName);
         if (!remoteHeadFile.exists() || logs == null) {
             log.warn("local/remote log is empty, no fetch");
+            Files.move(remoteHeadLockFile.toPath(), remoteHeadFile.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
             return;
         }
         // 去remoteLog, remoteLog只在本地存,不上传. 改用commitObject中的parent获取提交链
@@ -520,7 +521,7 @@ public class GitLite {
 
         List<LogItem> committedLogs = localLogManager.getLogs();
 
-        // fixme： 不用remotelog， 直接比较两个的差异
+        // fixme： 不用remotelog， 直接比较两个的差异？?
         List<LogItem> remoteLogs = remoteLogManager.getLogs();
 
         if (committedLogs == null) {
@@ -574,10 +575,11 @@ public class GitLite {
             return;
         }
 
-        Set<String> committedChangedPaths = committedChanged.stream().map(Index.Entry::getPath).collect(Collectors.toSet());
-        Set<String> remoteChangedPaths = remoteChanged.stream().map(Index.Entry::getPath).collect(Collectors.toSet());
+        Map<String,String> committedChangedPath2ObjectIdMap = committedChanged.stream().collect(Collectors.toMap(Index.Entry::getPath, Index.Entry::getObjectId));
+        Map<String,String> remoteChangedPath2ObjectIdMap = remoteChanged.stream().collect(Collectors.toMap(Index.Entry::getPath, Index.Entry::getObjectId));
 
-        Collection<String> intersection = CollectionUtils.intersection(committedChangedPaths, remoteChangedPaths);
+        Collection<String> intersection = CollectionUtils.intersection(committedChangedPath2ObjectIdMap.keySet(), remoteChangedPath2ObjectIdMap.keySet());
+        intersection.removeIf(x -> Objects.equals(committedChangedPath2ObjectIdMap.get(x), remoteChangedPath2ObjectIdMap.get(x)));
 
         if (CollectionUtils.isNotEmpty(intersection)) {
             // todo: merge conflicted
@@ -667,6 +669,8 @@ public class GitLite {
         // 检查本地的remote和远程的remote是否有异常, 比如远程的文件被修改了导致本地的晚于远程
 //        checkWebRemoteStatus(remoteName, remoteStorage, remoteLogManager);
 
+
+        // fixme: clone 之后这里找不到parent的object, clone的时候要下载所有objects?
         List<CommitChainItem> chain = getCommitChain(localCommitObjectId, remoteCommitObjectId);
 
         IndexDiffResult combinedDiff = new IndexDiffResult();
