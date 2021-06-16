@@ -22,7 +22,6 @@ import com.beyond.jgit.util.PathUtils;
 import lombok.Data;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.collections4.CollectionUtils;
-import org.apache.commons.collections4.ListUtils;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.jetbrains.annotations.NotNull;
@@ -258,6 +257,12 @@ public class GitLite {
     }
 
 
+    //todo
+    public void clone(String remoteName){
+
+    }
+
+
     public void fetch(String remoteName) throws IOException {
         // todo: only fetch latest commit
         Storage remoteStorage = remoteStorageMap.get(remoteName);
@@ -284,24 +289,14 @@ public class GitLite {
             throw new RuntimeException("remote master is locked");
         }
         remoteStorage.download(PathUtils.concat("refs", "remotes", remoteName, "master"), remoteHeadLockFile);
-        // fetch remote logs to remote logs lock
-        remoteStorage.download(PathUtils.concat("logs", "remotes", remoteName, "master.json"), new File(PathUtils.concat(config.getLogsRemotesDir(), remoteName, "master.json.lock")));
 
         List<LogItem> logs = remoteLogManager.getLogs();
         if (remoteHeadFile.exists() && logs != null) {
             String remoteHeadObjectId = FileUtils.readFileToString(remoteHeadFile, StandardCharsets.UTF_8);
             String remoteHeadLockObjectId = FileUtils.readFileToString(remoteHeadLockFile, StandardCharsets.UTF_8);
-            int remoteLockIndex = ListUtils.indexOf(logs, x -> StringUtils.equals(x.getCommitObjectId(), remoteHeadLockObjectId));
-            int remoteIndex = ListUtils.indexOf(logs, x -> StringUtils.equals(x.getCommitObjectId(), remoteHeadObjectId));
-            if (remoteLockIndex < remoteIndex) {
-                log.warn("remote in file is after remote in web");
-                remoteLogManager.commit();
-                Files.move(remoteHeadLockFile.toPath(), remoteHeadFile.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-                return;
-            }
-            if (remoteLockIndex == remoteIndex) {
+            Set<String> remotePushedObjectIds = logs.stream().map(LogItem::getCommitObjectId).collect(Collectors.toSet());
+            if (Objects.equals(remoteHeadObjectId, remoteHeadLockObjectId) || remotePushedObjectIds.contains(remoteHeadLockObjectId)) {
                 log.warn("Already up to date.");
-                remoteLogManager.commit();
                 Files.move(remoteHeadLockFile.toPath(), remoteHeadFile.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
                 return;
             }
@@ -321,20 +316,10 @@ public class GitLite {
             downloadByObjectIdRecursive(commitChainItem.getCommitObjectId(), remoteStorage);
         }
 
-        // update logs
-        try {
-            String currRemoteLogsDir = PathUtils.concat(config.getLogsRemotesDir(), remoteName);
-            remoteStorage.download(PathUtils.concat("logs", "remotes", remoteName, "master.json"), new File(PathUtils.concat(currRemoteLogsDir, "master.json.lock")));
-        } catch (Exception e) {
-            log.error("download remote logs fail", e);
-            remoteLogManager.rollback();
-            throw e;
-        }
 
         // update head
         remoteStorage.download(PathUtils.concat("refs", "remotes", remoteName, "master"), remoteHeadLockFile);
 
-        remoteLogManager.commit();
         Files.move(remoteHeadLockFile.toPath(), remoteHeadFile.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
 
     }
@@ -696,27 +681,8 @@ public class GitLite {
         remoteLogItem.setCommitterEmail(localCommitLogItem.getCommitterEmail());
         remoteLogItem.setMessage("push");
         remoteLogItem.setMtime(System.currentTimeMillis());
-
-        // todo: 并发push问题，开分支 or 加远程锁?
-        String currRemoteLogsDir = PathUtils.concat(config.getLogsRemotesDir(), remoteName);
-//        remoteStorage.download(PathUtils.concat("logs", "remotes", remoteName, "master.json"), new File(PathUtils.concat(currRemoteLogsDir, "master.json.lock")));
-//        if (!Objects.equals(remoteLogManager.getLastLogItem().getCommitObjectId(), remoteCommitObjectId)) {
-//            throw new RuntimeException("web remote head is changed, concurrent problem?");
-//        }
         remoteLogManager.lock();
         remoteLogManager.appendToLock(remoteLogItem);
-
-        // 4  上传日志
-        try {
-            //  upload log lock file to log file
-            remoteStorage.upload(new File(PathUtils.concat(currRemoteLogsDir, "master.json.lock")),
-                    PathUtils.concat("logs", "remotes", remoteName, "master.json"));
-            remoteLogManager.commit();
-        } catch (Exception e) {
-            log.error("上传日志失败", e);
-            remoteLogManager.rollback();
-            throw e;
-        }
 
         // 5. 修改本地remote的head(异常回退)
         String currRemoteRefsDir = PathUtils.concat(config.getRefsRemotesDir(), remoteName);
@@ -737,42 +703,6 @@ public class GitLite {
             throw e;
         }
 
-    }
-
-    private void checkWebRemoteStatus(String remoteName, Storage remoteStorage, LogManager remoteLogManager) throws IOException {
-        String currRemoteLogsDir = PathUtils.concat(config.getLogsRemotesDir(), remoteName);
-        File remoteLogFile = new File(PathUtils.concat(currRemoteLogsDir, "master.json"));
-        File remoteLogLockFile = new File(PathUtils.concat(currRemoteLogsDir, "master.json.lock"));
-        boolean webRemoteLogExists = remoteStorage.exists(PathUtils.concat("logs", "remotes", remoteName, "master.json"));
-        if (!webRemoteLogExists && remoteLogFile.exists()) {
-            throw new RuntimeException("web remote logs is empty, but file remote logs is not empty");
-        }
-        if (!webRemoteLogExists && !remoteLogFile.exists()) {
-            return;
-        }
-        try {
-            remoteStorage.download(PathUtils.concat("logs", "remotes", remoteName, "master.json"), remoteLogLockFile);
-            List<LogItem> webRemoteLogItems = LogManager.getLogsFromFile(remoteLogLockFile);
-            List<LogItem> fileRemoteLogItems = LogManager.getLogsFromFile(remoteLogFile);
-            if (CollectionUtils.isEmpty(webRemoteLogItems) && CollectionUtils.isEmpty(fileRemoteLogItems)) {
-                log.warn("web remote logs is empty, but file remote logs is not empty");
-            }
-            if (CollectionUtils.isEmpty(webRemoteLogItems) && CollectionUtils.isNotEmpty(fileRemoteLogItems)) {
-                throw new RuntimeException("web remote logs is empty, but file remote logs is not empty");
-            }
-            if (CollectionUtils.isNotEmpty(webRemoteLogItems) && CollectionUtils.isEmpty(fileRemoteLogItems)) {
-                throw new RuntimeException("file remote logs is empty/null");
-            }
-            assert webRemoteLogItems != null;
-            assert fileRemoteLogItems != null;
-            if (!webRemoteLogItems.containsAll(fileRemoteLogItems)) {
-                throw new RuntimeException("file remote has some commit not push.");
-            }
-        } finally {
-            if (remoteLogLockFile.exists()) {
-                FileUtils.forceDelete(remoteLogLockFile);
-            }
-        }
     }
 
     // 包新不包旧
