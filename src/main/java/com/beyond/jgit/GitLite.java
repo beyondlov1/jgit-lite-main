@@ -15,16 +15,12 @@ import com.beyond.jgit.storage.FileStorage;
 import com.beyond.jgit.storage.SardineStorage;
 import com.beyond.jgit.storage.Storage;
 import com.beyond.jgit.storage.TransportMapping;
-import com.beyond.jgit.util.FileUtil;
-import com.beyond.jgit.util.JsonUtils;
-import com.beyond.jgit.util.ObjectUtils;
-import com.beyond.jgit.util.PathUtils;
+import com.beyond.jgit.util.*;
 import lombok.Data;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang3.StringUtils;
-import org.jetbrains.annotations.NotNull;
 
 import java.io.File;
 import java.io.IOException;
@@ -245,9 +241,9 @@ public class GitLite {
         commitObjectData.setAuthor(user);
         commitObjectData.setMessage(message);
         LogItem lastLogItem = localLogManager.getLastLogItem();
-        if (lastLogItem == null){
+        if (lastLogItem == null) {
             commitObjectData.addParent(EMPTY_OBJECT_ID);
-        }else{
+        } else {
             commitObjectData.addParent(lastLogItem.getCommitObjectId());
         }
 
@@ -306,14 +302,14 @@ public class GitLite {
             remoteLogManager.writeToLock(Collections.singletonList(logItem));
             localLogManager.lock();
             localLogManager.writeToLock(Collections.singletonList(logItem));
-            FileUtils.write(refsHeadLockFile,webRemoteLatestCommitObjectId,StandardCharsets.UTF_8);
+            FileUtils.write(refsHeadLockFile, webRemoteLatestCommitObjectId, StandardCharsets.UTF_8);
 
             remoteLogManager.commit();
             localLogManager.commit();
             Files.move(refsHeadLockFile.toPath(), new File(PathUtils.concat(config.getRefsHeadsDir(), "master")).toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
 
-        }catch (Exception e){
-            log.error("clone fail",e);
+        } catch (Exception e) {
+            log.error("clone fail", e);
             remoteLogManager.rollback();
             localLogManager.rollback();
             FileUtils.deleteQuietly(refsHeadLockFile);
@@ -325,7 +321,6 @@ public class GitLite {
 
 
     public void fetch(String remoteName) throws IOException {
-        // todo: only fetch latest commit
         Storage remoteStorage = remoteStorageMap.get(remoteName);
         if (remoteStorage == null) {
             throw new RuntimeException("remoteStorage is not exist");
@@ -372,11 +367,13 @@ public class GitLite {
             return;
         }
         // 去remoteLog, remoteLog只在本地存,不上传. 改用commitObject中的parent获取提交链
-        List<CommitChainItem> chain = getRemoteCommitChain(remoteLockCommitObjectId, remoteCommitObjectId, remoteStorage);
-        // chain 顺序: 由新到旧
-        for (CommitChainItem commitChainItem : chain) {
-            downloadByObjectIdRecursive(commitChainItem.getCommitObjectId(), remoteStorage);
-        }
+        CommitChainItem chainHead = getRemoteCommitChainHead(remoteLockCommitObjectId, remoteCommitObjectId, remoteStorage);
+        chainHead.walk(commitChainItem -> {
+            // olderCommitObjectId的parents是空的， 这里不需要再重新下载一次olderCommitObjectId
+            if (CollectionUtils.isNotEmpty(commitChainItem.getParents())) {
+                downloadByObjectIdRecursive(commitChainItem.getCommitObjectId(), remoteStorage);
+            }
+        });
 
 
         // update head
@@ -384,31 +381,73 @@ public class GitLite {
 
     }
 
-    // 包新不包旧
-    private List<CommitChainItem> getCommitChain(String newerCommitObjectId, String olderCommitObjectId) throws IOException {
-        CommitChainItem firstItem = getCommitChainHead(newerCommitObjectId, olderCommitObjectId);
-        List<CommitChainItem> chain = new ArrayList<>();
-
-        CommitChainItem tmp = firstItem;
-        while (true) {
-            if (tmp == null){
-                break;
-            }
-            CommitChainItem parent = tmp.getParent();
-            if (parent == null){
-                break;
-            }
-            chain.add(tmp);
-            tmp = parent;
+    private void getSingleCommitChains(String newerCommitObjectId, String olderCommitObjectId, List<CommitChainItem> parentChain, List<List<CommitChainItem>> chains) throws IOException {
+        CommitChainItem root = getCommitChainHead(newerCommitObjectId, olderCommitObjectId);
+        parentChain.add(root);
+        List<CommitChainItem> parents = root.getParents();
+        for (CommitChainItem parent : parents) {
+            List<CommitChainItem> branch = new ArrayList<>(parentChain);
+            branch.add(parent);
+            chains.add(branch);
+            parentChain.add(parent);
         }
-        return chain;
     }
 
+
+    private void getPaths(CommitChainItem root, List<List<CommitChainItem>> chains) {
+        if (root == null) {
+            return;
+        }
+        List<CommitChainItem> parents = root.getParents();
+        for (List<CommitChainItem> chain : chains) {
+            chain.add(root);
+        }
+        List<List<CommitChainItem>> newChains = new ArrayList<>();
+        for (CommitChainItem parent : parents) {
+            for (List<CommitChainItem> chain : chains) {
+                List<CommitChainItem> newChain = new ArrayList<>(chain);
+                newChains.add(newChain);
+            }
+            getPaths(parent, newChains);
+        }
+        if (CollectionUtils.isEmpty(parents)) {
+            return;
+        }
+        chains.clear();
+        chains.addAll(newChains);
+    }
+
+    //包左不包右
+    private List<List<CommitChainItemSingle>> pathsToSingleCommitChain(List<List<CommitChainItem>> chains) {
+        List<List<CommitChainItemSingle>> singleCommitChains = new ArrayList<>();
+
+        List<List<CommitChainItem>> reversedChains = new ArrayList<>();
+        for (List<CommitChainItem> chain : chains) {
+            List<CommitChainItem> reversedChain = new ArrayList<>(chain);
+            Collections.reverse(reversedChain);
+            reversedChains.add(reversedChain);
+        }
+
+        for (List<CommitChainItem> reversedChain : reversedChains) {
+            List<CommitChainItemSingle> singleChain = new LinkedList<>();
+            CommitChainItemSingle parent = null;
+            for (CommitChainItem commitChainItem : reversedChain) {
+                CommitChainItemSingle single = new CommitChainItemSingle();
+                single.setCommitObjectId(commitChainItem.getCommitObjectId());
+                single.setParent(parent);
+                singleChain.add(0, single);
+                parent = single;
+            }
+            singleCommitChains.add(singleChain);
+        }
+        return singleCommitChains;
+    }
+
+
+    // 包左不包右
     private CommitChainItem getCommitChainHead(String newerCommitObjectId, String olderCommitObjectId) throws IOException {
         if (Objects.equals(newerCommitObjectId, olderCommitObjectId)) {
-            CommitChainItem commitChainItem = new CommitChainItem();
-            commitChainItem.setCommitObjectId(newerCommitObjectId);
-            return commitChainItem;
+            return null;
         }
         if (Objects.equals(newerCommitObjectId, EMPTY_OBJECT_ID)) {
             return null;
@@ -417,17 +456,20 @@ public class GitLite {
         CommitChainItem commitChainItem = new CommitChainItem();
         commitChainItem.setCommitObjectId(newerCommitObjectId);
         List<String> parents = CommitObjectData.parseFrom(commitObjectEntity.getData()).getParents();
-        // fixme parents暂时只有一个值
+        // merge 时会有多个parent
         for (String parent : parents) {
-            commitChainItem.setParent(getCommitChainHead(parent, olderCommitObjectId));
+            CommitChainItem parentItem = getCommitChainHead(parent, olderCommitObjectId);
+            if (parentItem != null) {
+                commitChainItem.getParents().add(parentItem);
+            }
         }
         return commitChainItem;
     }
 
     // 包新不包旧
-    private List<CommitChainItem> getRemoteCommitChain(String newerCommitObjectId, String olderCommitObjectId, Storage remoteStorage) throws IOException {
+    private CommitChainItem getRemoteCommitChainHead(String newerCommitObjectId, String olderCommitObjectId, Storage remoteStorage) throws IOException {
         downloadCommitObjectsBetween(newerCommitObjectId, olderCommitObjectId, remoteStorage);
-        return getCommitChain(newerCommitObjectId, olderCommitObjectId);
+        return getCommitChainHead(newerCommitObjectId, olderCommitObjectId);
     }
 
     private void downloadCommitObjectsBetween(String newerCommitObjectId, String olderCommitObjectId, Storage remoteStorage) throws IOException {
@@ -444,7 +486,7 @@ public class GitLite {
         }
         ObjectEntity commitObjectEntity = objectManager.read(newerCommitObjectId);
         List<String> parents = CommitObjectData.parseFrom(commitObjectEntity.getData()).getParents();
-        // fixme parents暂时只有一个值
+        //  merge时会有多个
         for (String parent : parents) {
             downloadCommitObjectsBetween(parent, olderCommitObjectId, remoteStorage);
         }
@@ -514,39 +556,65 @@ public class GitLite {
         // 4. 对比变化的差异（以文件路径为key)
         // 根据log查询local和remote共同经历的最后一个commit
 
-        LogManager remoteLogManager = remoteLogManagerMap.get(remoteName);
-        if (remoteLogManager == null) {
-            throw new RuntimeException("remoteLogManager is not exist");
-        }
-
-        List<LogItem> committedLogs = localLogManager.getLogs();
-
-        // fixme： 不用remotelog， 直接比较两个的差异？?
-        List<LogItem> remoteLogs = remoteLogManager.getLogs();
-
-        if (committedLogs == null) {
-            log.warn("local logs is empty");
-            return;
-        }
-        if (remoteLogs == null) {
-            log.warn("remote logs is empty");
-            remoteLogs = new ArrayList<>();
-        }
-
-        String intersectionCommitObjectId = null;
-        Set<String> remoteObjectIdSet = remoteLogs.stream().map(LogItem::getCommitObjectId).collect(Collectors.toSet());
-        for (int i = committedLogs.size() - 1; i >= 0; i--) {
-            if (remoteObjectIdSet.contains(committedLogs.get(i).getCommitObjectId())) {
-                intersectionCommitObjectId = committedLogs.get(i).getCommitObjectId();
-                break;
-            }
-        }
-        if (intersectionCommitObjectId == null) {
-            log.warn("no intersectionCommitObjectId, remote log is empty, cover.");
-        }
 
         String localCommitObjectId = findLocalCommitObjectId();
         String remoteCommitObjectId = findRemoteCommitObjectId(remoteName);
+
+        if (StringUtils.equals(localCommitObjectId, remoteCommitObjectId)) {
+            log.info("nothing changed, no merge");
+            return;
+        }
+
+        String intersectionCommitObjectId = null;
+
+        if (localCommitObjectId != null && remoteCommitObjectId != null) {
+            Set<String> localCommitObjectIds = new HashSet<>();
+            localCommitObjectIds.add(localCommitObjectId);
+            Set<String> remoteCommitObjectIds = new HashSet<>();
+            remoteCommitObjectIds.add(remoteCommitObjectId);
+
+            List<CommitChainItemLazy> localCommitChainItemLazys = new ArrayList<>();
+            localCommitChainItemLazys.add(new CommitChainItemLazy(localCommitObjectId, objectManager));
+            List<CommitChainItemLazy> remoteCommitChainItemLazys = new ArrayList<>();
+            remoteCommitChainItemLazys.add(new CommitChainItemLazy(remoteCommitObjectId, objectManager));
+            for (; ; ) {
+                List<CommitChainItemLazy> newLocalCommitChainItemLazys = new ArrayList<>();
+                for (CommitChainItemLazy localLazy : localCommitChainItemLazys) {
+                    Set<String> localParents = localLazy.getParents().stream().map(CommitChainItem::getCommitObjectId).collect(Collectors.toSet());
+                    for (String localParent : localParents) {
+                        if (remoteCommitObjectIds.contains(localParent)) {
+                            intersectionCommitObjectId = localParent;
+                            break;
+                        }
+                        localCommitObjectIds.add(localParent);
+                        newLocalCommitChainItemLazys.add(new CommitChainItemLazy(localParent, objectManager));
+                    }
+                }
+                localCommitChainItemLazys = newLocalCommitChainItemLazys;
+
+                List<CommitChainItemLazy> newRemoteCommitChainItemLazys = new ArrayList<>();
+                for (CommitChainItemLazy remoteLazy : remoteCommitChainItemLazys) {
+                    Set<String> remoteParents = remoteLazy.getParents().stream().map(CommitChainItem::getCommitObjectId).collect(Collectors.toSet());
+                    for (String remoteParent : remoteParents) {
+                        if (localCommitObjectIds.contains(remoteParent)) {
+                            intersectionCommitObjectId = remoteParent;
+                            break;
+                        }
+                        remoteCommitObjectIds.add(remoteParent);
+                        newLocalCommitChainItemLazys.add(new CommitChainItemLazy(remoteParent, objectManager));
+                    }
+                }
+                remoteCommitChainItemLazys = newRemoteCommitChainItemLazys;
+
+                if (CollectionUtils.isEmpty(localCommitChainItemLazys) && CollectionUtils.isEmpty(remoteCommitChainItemLazys)) {
+                    break;
+                }
+            }
+        }
+
+        if (intersectionCommitObjectId == null) {
+            log.warn("no intersectionCommitObjectId, remote log is empty, cover.");
+        }
 
         Index intersectionIndex = Index.generateFromCommit(intersectionCommitObjectId, objectManager);
 
@@ -575,8 +643,8 @@ public class GitLite {
             return;
         }
 
-        Map<String,String> committedChangedPath2ObjectIdMap = committedChanged.stream().collect(Collectors.toMap(Index.Entry::getPath, Index.Entry::getObjectId));
-        Map<String,String> remoteChangedPath2ObjectIdMap = remoteChanged.stream().collect(Collectors.toMap(Index.Entry::getPath, Index.Entry::getObjectId));
+        Map<String, String> committedChangedPath2ObjectIdMap = committedChanged.stream().collect(Collectors.toMap(Index.Entry::getPath, Index.Entry::getObjectId));
+        Map<String, String> remoteChangedPath2ObjectIdMap = remoteChanged.stream().collect(Collectors.toMap(Index.Entry::getPath, Index.Entry::getObjectId));
 
         Collection<String> intersection = CollectionUtils.intersection(committedChangedPath2ObjectIdMap.keySet(), remoteChangedPath2ObjectIdMap.keySet());
         intersection.removeIf(x -> Objects.equals(committedChangedPath2ObjectIdMap.get(x), remoteChangedPath2ObjectIdMap.get(x)));
@@ -666,29 +734,42 @@ public class GitLite {
         String localCommitObjectId = findLocalCommitObjectId();
         String remoteCommitObjectId = findRemoteCommitObjectId(remoteName);
 
+        if (Objects.equals(localCommitObjectId, remoteCommitObjectId)){
+            log.info("nothing changed, no push");
+            return;
+        }
+
         // 检查本地的remote和远程的remote是否有异常, 比如远程的文件被修改了导致本地的晚于远程
 //        checkWebRemoteStatus(remoteName, remoteStorage, remoteLogManager);
 
 
-        // fixme: clone 之后这里找不到parent的object, clone的时候要下载所有objects?
-        List<CommitChainItem> chain = getCommitChain(localCommitObjectId, remoteCommitObjectId);
+        // fixme: clone 之后这里找不到parent的object, clone的时候要下载所有objects? 上传时再上传一个压缩包？
+        CommitChainItem chainHead = getCommitChainHead(localCommitObjectId, remoteCommitObjectId);
+        List<List<CommitChainItem>> chains = new ArrayList<>();
+        chains.add(new ArrayList<>());
+        getPaths(chainHead, chains);
+        List<List<CommitChainItemSingle>> singleChains = pathsToSingleCommitChain(chains);
+        singleChains.removeIf(x -> remoteCommitObjectId != null && !x.stream().map(CommitChainItemSingle::getCommitObjectId).collect(Collectors.toSet()).contains(remoteCommitObjectId));
 
         IndexDiffResult combinedDiff = new IndexDiffResult();
-        for (CommitChainItem commitChainItem : chain) {
-            Index thisIndex = Index.generateFromCommit(commitChainItem.getCommitObjectId(), objectManager);
-            Index parentIndex;
-            if (commitChainItem.getParent() == null) {
-                parentIndex = null;
-            } else {
-                parentIndex = Index.generateFromCommit(commitChainItem.getParent().getCommitObjectId(), objectManager);
-            }
-            IndexDiffResult committedDiff = IndexDiffer.diff(thisIndex, parentIndex);
-            log.debug("committedDiff to push: {}", JsonUtils.writeValueAsString(committedDiff));
 
-            // 2. 上传objects
-            combinedDiff.getAdded().addAll(committedDiff.getAdded());
-            combinedDiff.getUpdated().addAll(committedDiff.getUpdated());
-            combinedDiff.getRemoved().addAll(committedDiff.getRemoved());
+        for (List<CommitChainItemSingle> singleChain : singleChains) {
+            for (CommitChainItemSingle commitChainItem : singleChain) {
+                Index thisIndex = Index.generateFromCommit(commitChainItem.getCommitObjectId(), objectManager);
+                Index parentIndex;
+                if (commitChainItem.getParent() == null) {
+                    parentIndex = null;
+                } else {
+                    parentIndex = Index.generateFromCommit(commitChainItem.getParent().getCommitObjectId(), objectManager);
+                }
+                IndexDiffResult committedDiff = IndexDiffer.diff(thisIndex, parentIndex);
+                log.debug("committedDiff to push: {}", JsonUtils.writeValueAsString(committedDiff));
+
+                // 2. 上传objects
+                combinedDiff.getAdded().addAll(committedDiff.getAdded());
+                combinedDiff.getUpdated().addAll(committedDiff.getUpdated());
+                combinedDiff.getRemoved().addAll(committedDiff.getRemoved());
+            }
         }
 
         if (!combinedDiff.isChanged()) {
@@ -709,24 +790,28 @@ public class GitLite {
         }
 
         // 2. 上传commitObject，上传treeObject
-        for (CommitChainItem commitChainItem : chain) {
-            // 没有用uploadCommitObjectAndTreeObjectRecursive是为了减少不必要的上传
-            // 查找变化的treeObjectId
-            Map<String, String> parentPath2TreeObjectIdMap = new HashMap<>();
-            getChangedTreeObjectRecursive(commitChainItem.getParent().getCommitObjectId(), "", parentPath2TreeObjectIdMap);
-            Map<String, String> thisPath2TreeObjectIdMap = new HashMap<>();
-            getChangedTreeObjectRecursive(commitChainItem.getCommitObjectId(), "", thisPath2TreeObjectIdMap);
-            Set<String> changedTreeObjectIds = new HashSet<>();
-            for (String path : thisPath2TreeObjectIdMap.keySet()) {
-                if (parentPath2TreeObjectIdMap.get(path) != null && Objects.equals(parentPath2TreeObjectIdMap.get(path), thisPath2TreeObjectIdMap.get(path))) {
-                    continue;
+        for (List<CommitChainItemSingle> singleChain : singleChains) {
+            for (CommitChainItemSingle commitChainItem : singleChain) {
+                // 没有用uploadCommitObjectAndTreeObjectRecursive是为了减少不必要的上传
+                // 查找变化的treeObjectId
+                Map<String, String> parentPath2TreeObjectIdMap = new HashMap<>();
+                if (commitChainItem.getParent()!=null){
+                    getChangedTreeObjectRecursive(commitChainItem.getParent().getCommitObjectId(), "", parentPath2TreeObjectIdMap);
                 }
-                changedTreeObjectIds.add(thisPath2TreeObjectIdMap.get(path));
-            }
-            objectIdsToUpload.addAll(changedTreeObjectIds);
+                Map<String, String> thisPath2TreeObjectIdMap = new HashMap<>();
+                getChangedTreeObjectRecursive(commitChainItem.getCommitObjectId(), "", thisPath2TreeObjectIdMap);
+                Set<String> changedTreeObjectIds = new HashSet<>();
+                for (String path : thisPath2TreeObjectIdMap.keySet()) {
+                    if (parentPath2TreeObjectIdMap.get(path) != null && Objects.equals(parentPath2TreeObjectIdMap.get(path), thisPath2TreeObjectIdMap.get(path))) {
+                        continue;
+                    }
+                    changedTreeObjectIds.add(thisPath2TreeObjectIdMap.get(path));
+                }
+                objectIdsToUpload.addAll(changedTreeObjectIds);
 
-            // 上传commitObjectId
-            objectIdsToUpload.add(commitChainItem.getCommitObjectId());
+                // 上传commitObjectId
+                objectIdsToUpload.add(commitChainItem.getCommitObjectId());
+            }
         }
 
         // upload with session, dont resort
@@ -775,44 +860,6 @@ public class GitLite {
             remoteLogManager.rollback();
             throw e;
         }
-    }
-
-    // 包新不包旧
-    @NotNull
-    private List<CommitChainItem> getCommitChainByLog(List<LogItem> logs, String newerCommitObjectId, String olderCommitObjectId) throws IOException {
-        List<CommitChainItem> chain = new LinkedList<>();
-        boolean started = false;
-        CommitChainItem startCommitChainItem = null;
-        for (LogItem committedLog : logs) {
-            if (!started && olderCommitObjectId == null) {
-                CommitChainItem commitChainItem = new CommitChainItem();
-                commitChainItem.setCommitObjectId(committedLog.getCommitObjectId());
-                commitChainItem.setParent(null);
-                startCommitChainItem = commitChainItem;
-                chain.add(0, commitChainItem);
-                started = true;
-            } else if (!started && Objects.equals(committedLog.getCommitObjectId(), olderCommitObjectId)) {
-                started = true;
-                CommitChainItem commitChainItem = new CommitChainItem();
-                commitChainItem.setCommitObjectId(committedLog.getCommitObjectId());
-                commitChainItem.setParent(null);
-                startCommitChainItem = commitChainItem;
-            } else if (started && CollectionUtils.isEmpty(chain)) {
-                CommitChainItem commitChainItem = new CommitChainItem();
-                commitChainItem.setCommitObjectId(committedLog.getCommitObjectId());
-                commitChainItem.setParent(startCommitChainItem);
-                chain.add(0, commitChainItem);
-            } else if (started && CollectionUtils.isNotEmpty(chain)) {
-                CommitChainItem commitChainItem = new CommitChainItem();
-                commitChainItem.setCommitObjectId(committedLog.getCommitObjectId());
-                commitChainItem.setParent(chain.get(0));
-                chain.add(0, commitChainItem);
-            }
-            if (Objects.equals(committedLog.getCommitObjectId(), newerCommitObjectId)) {
-                break;
-            }
-        }
-        return chain;
     }
 
     @Deprecated
@@ -914,10 +961,5 @@ public class GitLite {
         }
     }
 
-    @Data
-    private static class CommitChainItem {
-        private String commitObjectId;
-        private CommitChainItem parent;
-    }
 
 }
