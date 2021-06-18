@@ -19,6 +19,7 @@ import com.beyond.jgit.util.*;
 import com.beyond.jgit.util.commitchain.CommitChainItem;
 import com.beyond.jgit.util.commitchain.CommitChainItemLazy;
 import com.beyond.jgit.util.commitchain.CommitChainItemSingleParent;
+import com.beyond.jgit.util.commitchain.CommitChainUtils;
 import lombok.Data;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.collections4.CollectionUtils;
@@ -288,7 +289,13 @@ public class GitLite {
 
         // 根据 remote head 判断需要下载那些objects
         String webRemoteLatestCommitObjectId = findRemoteCommitObjectId(remoteName);
-        downloadByObjectIdRecursive(webRemoteLatestCommitObjectId, remoteStorage);
+        CommitChainItem chainHead = getRemoteCommitChainHead(webRemoteLatestCommitObjectId, null, remoteStorage);
+        chainHead.walk(commitChainItem -> {
+            // olderCommitObjectId的parents是空的， 这里不需要再重新下载一次olderCommitObjectId
+            if (CollectionUtils.isNotEmpty(commitChainItem.getParents())) {
+                downloadByObjectIdRecursive(commitChainItem.getCommitObjectId(), remoteStorage);
+            }
+        });
 
         ObjectEntity commitObjectEntity = objectManager.read(webRemoteLatestCommitObjectId);
         CommitObjectData commitObjectData = CommitObjectData.parseFrom(commitObjectEntity.getData());
@@ -683,7 +690,7 @@ public class GitLite {
             for (CommitChainItemSingleParent commitChainItem : chainPath) {
                 Index thisIndex = Index.generateFromCommit(commitChainItem.getCommitObjectId(), objectManager);
                 Index parentIndex;
-                if (commitChainItem.getParent() == null) {
+                if (commitChainItem.getParent() == null || Objects.equals(commitChainItem.getParent().getCommitObjectId(), EMPTY_OBJECT_ID)) {
                     parentIndex = null;
                 } else {
                     parentIndex = Index.generateFromCommit(commitChainItem.getParent().getCommitObjectId(), objectManager);
@@ -721,7 +728,7 @@ public class GitLite {
                 // 没有用uploadCommitObjectAndTreeObjectRecursive是为了减少不必要的上传
                 // 查找变化的treeObjectId
                 Map<String, String> parentPath2TreeObjectIdMap = new HashMap<>();
-                if (commitChainItem.getParent() != null) {
+                if (commitChainItem.getParent() != null && !Objects.equals(commitChainItem.getParent().getCommitObjectId(), EMPTY_OBJECT_ID)) {
                     getChangedTreeObjectRecursive(commitChainItem.getParent().getCommitObjectId(), "", parentPath2TreeObjectIdMap);
                 }
                 Map<String, String> thisPath2TreeObjectIdMap = new HashMap<>();
