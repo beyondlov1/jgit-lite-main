@@ -16,6 +16,8 @@ import java.io.IOException;
 import java.util.*;
 import java.util.stream.Collectors;
 
+import static com.beyond.jgit.GitLite.EMPTY_OBJECT_ID;
+
 @Data
 public class Index {
     private List<Entry> entries = new ArrayList<>();
@@ -70,6 +72,9 @@ public class Index {
 
     public static Index generateFromCommit(String commitObjectId, ObjectManager objectManager) throws IOException {
         if (commitObjectId == null){
+            return null;
+        }
+        if (Objects.equals(commitObjectId, EMPTY_OBJECT_ID)){
             return null;
         }
         ObjectEntity commit = objectManager.read(commitObjectId);

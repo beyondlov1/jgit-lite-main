@@ -1,10 +1,12 @@
-package com.beyond.jgit.util;
+package com.beyond.jgit.util.commitchain;
 
+import com.beyond.jgit.GitLite;
 import lombok.Data;
 
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 
 @Data
 public class CommitChainItem {
@@ -20,5 +22,9 @@ public class CommitChainItem {
 
     public interface Visitor {
         void visit(CommitChainItem item) throws IOException;
+    }
+
+    public boolean isEmptyObject(){
+        return Objects.equals(commitObjectId, GitLite.EMPTY_OBJECT_ID);
     }
 }

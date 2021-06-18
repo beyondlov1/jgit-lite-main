@@ -1,4 +1,4 @@
-package com.beyond.jgit.util;
+package com.beyond.jgit.util.commitchain;
 
 import com.beyond.jgit.GitLite;
 import com.beyond.jgit.object.ObjectEntity;

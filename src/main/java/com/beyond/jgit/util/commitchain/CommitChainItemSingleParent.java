@@ -1,13 +1,13 @@
-package com.beyond.jgit.util;
+package com.beyond.jgit.util.commitchain;
 
 import lombok.Data;
 
 import java.io.IOException;
 
 @Data
-public class CommitChainItemSingle {
+public class CommitChainItemSingleParent {
     private String commitObjectId;
-    private CommitChainItemSingle parent;
+    private CommitChainItemSingleParent parent;
 
     public void walk(Visitor visitor) throws IOException {
         visitor.visit(this);
@@ -15,6 +15,6 @@ public class CommitChainItemSingle {
     }
 
     public interface Visitor {
-        void visit(CommitChainItemSingle item) throws IOException;
+        void visit(CommitChainItemSingleParent item) throws IOException;
     }
 }
